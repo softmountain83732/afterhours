@@ -5,31 +5,7 @@
 -- =========================  EXTENSIONS  ====================================
 create extension if not exists "pgcrypto";
 
--- =========================  HELPER FUNCTIONS  ==============================
-
-create or replace function is_room_member(room_uuid uuid, user_uuid uuid)
-returns boolean
-language sql
-stable
-security definer
-as $$
-  select exists (
-    select 1 from public.room_members
-    where room_id = room_uuid and user_id = user_uuid
-  );
-$$;
-
-create or replace function is_room_host(room_uuid uuid, user_uuid uuid)
-returns boolean
-language sql
-stable
-security definer
-as $$
-  select exists (
-    select 1 from public.rooms
-    where id = room_uuid and host_id = user_uuid
-  );
-$$;
+-- =========================  TRIGGER HELPERS  ===============================
 
 -- trigger helper: auto-set updated_at
 create or replace function public.handle_updated_at()
@@ -243,6 +219,34 @@ create table public.room_members (
 
 create index room_members_room_id_idx on public.room_members (room_id);
 create index room_members_user_id_idx on public.room_members (user_id);
+
+-- ----------------------------------------------------------------------------
+-- ROOM HELPER FUNCTIONS
+-- Defined here so public.rooms and public.room_members exist before definition
+-- ----------------------------------------------------------------------------
+create or replace function is_room_member(room_uuid uuid, user_uuid uuid)
+returns boolean
+language sql
+stable
+security definer
+as $$
+  select exists (
+    select 1 from public.room_members
+    where room_id = room_uuid and user_id = user_uuid
+  );
+$$;
+
+create or replace function is_room_host(room_uuid uuid, user_uuid uuid)
+returns boolean
+language sql
+stable
+security definer
+as $$
+  select exists (
+    select 1 from public.rooms
+    where id = room_uuid and host_id = user_uuid
+  );
+$$;
 
 -- ============================================================================
 -- 12. ROOM_MESSAGES
