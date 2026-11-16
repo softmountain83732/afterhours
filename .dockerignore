@@ -1,0 +1,12 @@
+node_modules
+.next
+.git
+.gitignore
+__pycache__
+*.pyc
+.env
+.env.local
+cache/
+sessions/
+coverage/
+.pytest_cache/
