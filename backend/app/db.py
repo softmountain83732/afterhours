@@ -15,6 +15,7 @@ class DatabaseStore:
         self.profiles_by_username: Dict[str, str] = {}  # username -> id
         self.profiles_by_telegram: Dict[int, str] = {}  # tg_id -> id
         self.tracks: Dict[str, Dict[str, Any]] = {}
+        self.track_artwork: Dict[str, Dict[str, Any]] = {}
         self.artists: Dict[str, Dict[str, Any]] = {}
         self.albums: Dict[str, Dict[str, Any]] = {}
         self.playlists: Dict[str, Dict[str, Any]] = {}
