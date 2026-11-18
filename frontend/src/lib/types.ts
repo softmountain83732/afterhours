@@ -70,9 +70,28 @@ export interface RoomMember {
   display_name: string;
   avatar_url?: string | null;
   is_guest: boolean;
+  role?: "host" | "dj" | "queue_manager" | "listener" | "moderator";
   can_control_playback: boolean;
   can_manage_queue: boolean;
+  can_invite?: boolean;
+  can_moderate?: boolean;
   joined_at: string;
+}
+
+export interface QueueItem {
+  id: string;
+  room_id: string;
+  track_id: string;
+  added_by: string;
+  position: number;
+  vote_count: number;
+  played_at?: string | null;
+  tracks?: Track;
+  profiles?: {
+    username: string;
+    display_name: string;
+  };
+  created_at?: string;
 }
 
 export interface Room {
@@ -89,13 +108,21 @@ export interface Room {
   current_track?: Track | null;
   playback_position_ms: number;
   is_playing: boolean;
+  revision?: number;
+  playback_rate?: number;
+  server_timestamp?: string;
+  scheduled_start_ms?: number | null;
   queue: string[];
   queue_tracks?: Track[];
+  normalized_queue?: QueueItem[];
   members?: RoomMember[];
   user_permissions?: {
     is_host: boolean;
+    role?: string;
     can_control_playback: boolean;
     can_manage_queue: boolean;
+    can_invite?: boolean;
+    can_moderate?: boolean;
   };
   created_at: string;
 }

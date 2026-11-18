@@ -139,38 +139,47 @@ def test_track_discovery_and_search():
     assert "items" in data
     assert len(data["items"]) > 0
 
-    # Test search
-    search_res = client.get("/api/tracks?q=Dark")
+    # Test search using existing track title
+    first_track = data["items"][0]
+    search_term = first_track["title"].split()[0]
+    search_res = client.get(f"/api/tracks?q={search_term}")
     assert search_res.status_code == 200
     search_data = search_res.json()
-    assert any("Dark" in t["title"] for t in search_data["items"])
+    assert any(search_term.lower() in t["title"].lower() for t in search_data["items"])
 
 
 def test_audio_streaming_range_and_seeking():
     """Test HTTP Range 206 Partial Content for real audio seeking."""
-    # Get any track id
+    from pathlib import Path
+    from unittest.mock import patch, AsyncMock
+    from app.routers.streaming import audio_cache
+    from app.services.telegram import telegram_service
+
+    # Get cached track id if available
     tracks = client.get("/api/tracks").json()["items"]
-    track_id = tracks[0]["id"]
+    cached_track = next((t for t in tracks if (Path(audio_cache.cache_dir) / f"{t['id']}_standard.m4a").exists()), tracks[0])
+    track_id = cached_track["id"]
 
-    # 1. Full stream request (200)
-    full_res = client.get(f"/api/stream/{track_id}")
-    assert full_res.status_code == 200
-    assert "audio/" in full_res.headers.get("content-type", "")
-    assert full_res.headers.get("accept-ranges") == "bytes"
-    total_length = int(full_res.headers["content-length"])
+    with patch.object(telegram_service, "download_file_from_vault", AsyncMock(return_value=None)):
+        # 1. Full stream request (200)
+        full_res = client.get(f"/api/stream/{track_id}")
+        assert full_res.status_code == 200
+        assert "audio/" in full_res.headers.get("content-type", "")
+        assert full_res.headers.get("accept-ranges") == "bytes"
+        total_length = int(full_res.headers["content-length"])
 
-    # 2. Range request for seeking: bytes 0-1023 (first 1KB)
-    range_res = client.get(f"/api/stream/{track_id}", headers={"Range": "bytes=0-1023"})
-    assert range_res.status_code == 206
-    assert range_res.headers.get("content-range").startswith("bytes 0-1023/")
-    assert len(range_res.content) == 1024
+        # 2. Range request for seeking: bytes 0-1023 (first 1KB)
+        range_res = client.get(f"/api/stream/{track_id}", headers={"Range": "bytes=0-1023"})
+        assert range_res.status_code == 206
+        assert range_res.headers.get("content-range").startswith("bytes 0-1023/")
+        assert len(range_res.content) == 1024
 
-    # 3. Seeking into the middle of the track (e.g. 50000-99999)
-    if total_length > 100000:
-        seek_res = client.get(f"/api/stream/{track_id}", headers={"Range": "bytes=50000-99999"})
-        assert seek_res.status_code == 206
-        assert seek_res.headers.get("content-range").startswith("bytes 50000-99999/")
-        assert len(seek_res.content) == 50000
+        # 3. Seeking into the middle of the track (e.g. 50000-99999)
+        if total_length > 100000:
+            seek_res = client.get(f"/api/stream/{track_id}", headers={"Range": "bytes=50000-99999"})
+            assert seek_res.status_code == 206
+            assert seek_res.headers.get("content-range").startswith("bytes 50000-99999/")
+            assert len(seek_res.content) == 50000
 
 
 def test_playlist_lifecycle():

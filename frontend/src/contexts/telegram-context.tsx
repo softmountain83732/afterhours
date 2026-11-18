@@ -15,6 +15,7 @@ interface TelegramContextType {
   isReady: boolean;
   isTelegram: boolean;
   initData: string;
+  startParam: string | null;
   user: TelegramUser | null;
   haptic: (type?: "light" | "medium" | "heavy" | "rigid" | "soft") => void;
   notificationOccurred: (type: "error" | "success" | "warning") => void;
@@ -25,6 +26,7 @@ const TelegramContext = createContext<TelegramContextType>({
   isReady: false,
   isTelegram: false,
   initData: "",
+  startParam: null,
   user: null,
   haptic: () => {},
   notificationOccurred: () => {},
@@ -37,6 +39,7 @@ export const TelegramProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [isReady, setIsReady] = useState(false);
   const [isTelegram, setIsTelegram] = useState(false);
   const [initData, setInitData] = useState<string>("");
+  const [startParam, setStartParam] = useState<string | null>(null);
   const [user, setUser] = useState<TelegramUser | null>(null);
 
   useEffect(() => {
@@ -45,6 +48,7 @@ export const TelegramProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       if (tg && tg.initData) {
         setIsTelegram(true);
         setInitData(tg.initData);
+        setStartParam(tg.initDataUnsafe?.start_param || null);
         setUser(tg.initDataUnsafe?.user || null);
 
         // Tell Telegram the webapp is ready
@@ -95,6 +99,7 @@ export const TelegramProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         isReady,
         isTelegram,
         initData,
+        startParam,
         user,
         haptic,
         notificationOccurred,

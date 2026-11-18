@@ -17,6 +17,9 @@ interface PlayerContextType {
   repeatMode: "off" | "all" | "one";
   quality: AudioQuality;
   isFullPlayerOpen: boolean;
+  playbackRate: number;
+  setPlaybackRate: (rate: number) => void;
+  getAudioElement: () => HTMLAudioElement | null;
   playTrack: (track: Track, newQueue?: Track[]) => void;
   togglePlay: () => void;
   pause: () => void;
@@ -45,6 +48,9 @@ const PlayerContext = createContext<PlayerContextType>({
   repeatMode: "off",
   quality: "standard",
   isFullPlayerOpen: false,
+  playbackRate: 1.0,
+  setPlaybackRate: () => {},
+  getAudioElement: () => null,
   playTrack: () => {},
   togglePlay: () => {},
   pause: () => {},
@@ -76,14 +82,27 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [repeatMode, setRepeatMode] = useState<"off" | "all" | "one">("off");
   const [quality, setQualityState] = useState<AudioQuality>("standard");
   const [isFullPlayerOpen, setIsFullPlayerOpen] = useState(false);
+  const [playbackRate, setPlaybackRateState] = useState(1.0);
 
   const { haptic } = useTelegram();
   const playStartTimestampRef = useRef<number>(0);
+
+  const setPlaybackRate = (rate: number) => {
+    if (audioRef.current) {
+      audioRef.current.playbackRate = rate;
+      setPlaybackRateState(rate);
+    }
+  };
+
+  const getAudioElement = () => audioRef.current;
 
   // Initialize audio element
   useEffect(() => {
     const audio = new Audio();
     audio.preload = "auto";
+    if ("preservesPitch" in audio) {
+      (audio as any).preservesPitch = true;
+    }
     audioRef.current = audio;
 
     const onTimeUpdate = () => {
@@ -121,6 +140,39 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       audio.removeEventListener("ended", onEnded);
     };
   }, []);
+
+  // Media Session API for Lock Screen & Background Playback controls
+  useEffect(() => {
+    if (typeof window === "undefined" || !("mediaSession" in navigator)) return;
+
+    if (currentTrack) {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: currentTrack.title,
+        artist: currentTrack.artist_name || "Unknown Artist",
+        album: currentTrack.album_title || "Afterhours",
+        artwork: currentTrack.artwork_url
+          ? [
+              { src: currentTrack.artwork_url, sizes: "512x512", type: "image/jpeg" },
+              { src: currentTrack.artwork_thumb_url || currentTrack.artwork_url, sizes: "128x128", type: "image/jpeg" },
+            ]
+          : [],
+      });
+    }
+
+    navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
+
+    try {
+      navigator.mediaSession.setActionHandler("play", () => resume());
+      navigator.mediaSession.setActionHandler("pause", () => pause());
+      navigator.mediaSession.setActionHandler("previoustrack", () => previous());
+      navigator.mediaSession.setActionHandler("nexttrack", () => next());
+      navigator.mediaSession.setActionHandler("seekto", (details) => {
+        if (details.seekTime !== undefined) {
+          seek(details.seekTime);
+        }
+      });
+    } catch {}
+  }, [currentTrack, isPlaying]);
 
   const handleTrackEnd = () => {
     // Record history
@@ -303,6 +355,9 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         repeatMode,
         quality,
         isFullPlayerOpen,
+        playbackRate,
+        setPlaybackRate,
+        getAudioElement,
         playTrack,
         togglePlay,
         pause,

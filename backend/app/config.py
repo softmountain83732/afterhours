@@ -1,8 +1,13 @@
 """Application configuration using pydantic-settings."""
 
-from pydantic_settings import BaseSettings
+from pathlib import Path
 from functools import lru_cache
 from typing import Optional
+from pydantic_settings import BaseSettings
+from pydantic import field_validator
+
+# Canonical project root anchor (Afterhours repository root)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 class Settings(BaseSettings):
@@ -18,15 +23,26 @@ class Settings(BaseSettings):
     TELEGRAM_API_ID: int = 1234567
     TELEGRAM_API_HASH: str = "placeholder-api-hash"
     TELEGRAM_VAULT_CHAT_ID: int = -1001234567890
+    TELEGRAM_STRING_SESSION: Optional[str] = None
+    TELEGRAM_BOT_USERNAME: Optional[str] = None
+
+    # Frontend
+    FRONTEND_URL: str = "http://localhost:3000"
 
     # Auth
     AUTH_SECRET: str = "afterhours-dev-secret-change-in-production-min-32-chars-long"
+    DEV_AUTH_ENABLED: bool = True
 
-    # Cache / storage
-    AUDIO_CACHE_DIR: str = "./cache/audio"
-    ARTWORK_CACHE_DIR: str = "./cache/artwork"
+    # Cache / storage (resolved to canonical absolute paths)
+    AUDIO_CACHE_DIR: str = str((PROJECT_ROOT / "cache" / "audio").resolve())
+    ARTWORK_CACHE_DIR: str = str((PROJECT_ROOT / "cache" / "artwork").resolve())
+    MAX_AUDIO_CACHE_MB: int = 5120
     MAX_CACHE_SIZE_MB: int = 5000
     MAX_UPLOAD_SIZE_MB: int = 100
+
+    # Vault Listener & Reconciliation
+    VAULT_RECONCILIATION_INTERVAL_SECONDS: int = 300
+    VAULT_AUTO_INGEST: bool = True
 
     # Streaming
     MAX_CONCURRENT_STREAMS: int = 20
@@ -34,6 +50,23 @@ class Settings(BaseSettings):
 
     # Environment
     ENVIRONMENT: str = "development"
+
+    @field_validator("MAX_AUDIO_CACHE_MB", mode="after")
+    @classmethod
+    def validate_cache_capacity(cls, v: int) -> int:
+        """Validate that the configured cache capacity is positive."""
+        if v <= 0:
+            raise ValueError(f"MAX_AUDIO_CACHE_MB must be positive, got {v}")
+        return v
+
+    @field_validator("AUDIO_CACHE_DIR", "ARTWORK_CACHE_DIR", mode="after")
+    @classmethod
+    def resolve_absolute_paths(cls, v: str) -> str:
+        """Ensure cache directories are always absolute paths anchored to PROJECT_ROOT."""
+        p = Path(v)
+        if not p.is_absolute():
+            return str((PROJECT_ROOT / p).resolve())
+        return str(p.resolve())
 
     model_config = {
         "env_file": ".env",

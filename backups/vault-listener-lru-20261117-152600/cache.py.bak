@@ -1,0 +1,164 @@
+"""LRU File Cache for audio files and artwork with stream validation and concurrency locking."""
+
+import asyncio
+import logging
+import os
+import shutil
+import time
+import uuid
+from pathlib import Path
+from typing import Optional, Dict, Any
+
+logger = logging.getLogger("cache_service")
+AUDIO_EXTENSIONS = {".m4a", ".aac", ".flac", ".mp3", ".ogg", ".wav", ".webm"}
+
+
+class FileCache:
+    """Least-Recently-Used file cache stored on disk with media integrity validation."""
+
+    def __init__(self, cache_dir: str, max_size_mb: int = 5000):
+        self.cache_dir = Path(cache_dir)
+        self.max_size_bytes = max_size_mb * 1024 * 1024
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._locks: Dict[str, asyncio.Lock] = {}
+        self._registry_lock = asyncio.Lock()
+
+    async def get_lock(self, key: str) -> asyncio.Lock:
+        """Get or create an asyncio.Lock for a specific cache key to prevent concurrent work races."""
+        async with self._registry_lock:
+            if key not in self._locks:
+                self._locks[key] = asyncio.Lock()
+            return self._locks[key]
+
+    def get_path(self, key: str, extension: str = "") -> Path:
+        """Construct file path for a key."""
+        clean_key = "".join(c for c in key if c.isalnum() or c in ("-", "_"))
+        ext = f".{extension.lstrip('.')}" if extension else ""
+        return self.cache_dir / f"{clean_key}{ext}"
+
+    def exists(self, key: str, extension: str = "", validate_media: bool = False) -> bool:
+        """Check if file exists in cache and optionally validate audio stream."""
+        path = self.get_path(key, extension)
+        if not path.exists() or not path.is_file():
+            return False
+
+        if validate_media or path.suffix.lower() in AUDIO_EXTENSIONS:
+            from app.services.audio import AudioService
+            if not AudioService.validate_audio_file(path):
+                logger.warning(f"Cache entry {path.name} failed audio validation; rejecting.")
+                return False
+
+        try:
+            os.utime(path, None)
+        except OSError:
+            pass
+        return True
+
+    def get(self, key: str, extension: str = "", validate_media: bool = True) -> Optional[Path]:
+        """
+        Return cached file path and update access time, or None if not found/corrupt.
+        Automatically validates media files and removes corrupt or synthetic placeholders.
+        """
+        path = self.get_path(key, extension)
+        if not path.exists() or not path.is_file():
+            return None
+
+        # Check for zero or tiny invalid files
+        try:
+            size = path.stat().st_size
+            if size == 0 or size == 1028:
+                logger.warning(f"Removing invalid cache file {path.name} (size: {size} bytes)")
+                path.unlink(missing_ok=True)
+                return None
+        except OSError:
+            return None
+
+        # Audio stream validation for audio files
+        if validate_media and path.suffix.lower() in AUDIO_EXTENSIONS:
+            from app.services.audio import AudioService
+            if not AudioService.validate_audio_file(path):
+                logger.warning(f"Cached audio file {path.name} failed media validation; purging.")
+                path.unlink(missing_ok=True)
+                return None
+
+        try:
+            os.utime(path, None)
+        except OSError:
+            pass
+        return path
+
+    def put(self, key: str, src_path: Path, extension: str = "") -> Path:
+        """Copy file into cache atomically and evict old files if needed."""
+        dest_path = self.get_path(key, extension)
+        self.evict_if_needed(os.path.getsize(src_path))
+        temp_dest = dest_path.with_name(f"{dest_path.stem}.tmp_{uuid.uuid4().hex[:8]}{dest_path.suffix}")
+        shutil.copy2(src_path, temp_dest)
+        temp_dest.replace(dest_path)
+        try:
+            os.utime(dest_path, None)
+        except OSError:
+            pass
+        return dest_path
+
+    def get_total_size(self) -> int:
+        """Calculate total size of cache in bytes."""
+        total = 0
+        try:
+            for entry in self.cache_dir.iterdir():
+                if entry.is_file():
+                    try:
+                        total += entry.stat().st_size
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        return total
+
+    def evict_if_needed(self, additional_bytes: int = 0):
+        """Evict oldest accessed files until cache is under capacity."""
+        current_size = self.get_total_size()
+        target_size = self.max_size_bytes - additional_bytes
+
+        if current_size <= target_size:
+            return
+
+        files = []
+        try:
+            for entry in self.cache_dir.iterdir():
+                if entry.is_file():
+                    try:
+                        stat = entry.stat()
+                        files.append((stat.st_atime, stat.st_size, entry))
+                    except OSError:
+                        pass
+        except OSError:
+            return
+
+        files.sort(key=lambda x: x[0])
+
+        for _, size, path in files:
+            if current_size <= target_size:
+                break
+            try:
+                path.unlink(missing_ok=True)
+                current_size -= size
+            except OSError:
+                pass
+
+    def get_stats(self) -> Dict[str, Any]:
+        """Return cache statistics."""
+        count = 0
+        total_size = 0
+        try:
+            for entry in self.cache_dir.iterdir():
+                if entry.is_file():
+                    count += 1
+                    total_size += entry.stat().st_size
+        except OSError:
+            pass
+        return {
+            "file_count": count,
+            "total_bytes": total_size,
+            "total_mb": round(total_size / (1024 * 1024), 2),
+            "max_mb": round(self.max_size_bytes / (1024 * 1024), 2),
+        }

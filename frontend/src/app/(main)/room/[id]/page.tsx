@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import {
   Users,
@@ -11,16 +11,22 @@ import {
   Shield,
   Crown,
   Share2,
+  Check,
   LogOut,
   Send,
   UserX,
   ListMusic,
+  ThumbsUp,
+  ThumbsDown,
+  Volume2,
+  Radio,
 } from "lucide-react";
-import { Room, ChatMessage, Track } from "@/lib/types";
+import { ChatMessage, Track, QueueItem } from "@/lib/types";
 import { api } from "@/lib/api";
 import { useAuth } from "@/contexts/auth-context";
 import { usePlayer } from "@/contexts/player-context";
 import { useTelegram } from "@/contexts/telegram-context";
+import { useRoomSync } from "@/hooks/use-room-sync";
 
 export default function RoomDetailPage() {
   const params = useParams();
@@ -28,75 +34,89 @@ export default function RoomDetailPage() {
   const router = useRouter();
 
   const { user } = useAuth();
-  const { playTrack, togglePlay, isPlaying, seek, currentTrack, currentTime } = usePlayer();
+  const { isPlaying, currentTime, playTrack } = usePlayer();
   const { haptic } = useTelegram();
 
-  const [room, setRoom] = useState<Room | null>(null);
+  const {
+    room,
+    normalizedQueue,
+    currentDriftMs,
+    syncStatus,
+    needsAudioUnlock,
+    unlockAudio,
+    sendCommand,
+    refreshState,
+  } = useRoomSync(roomId);
+
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [newMessage, setNewMessage] = useState("");
   const [activeTab, setActiveTab] = useState<"chat" | "queue" | "members">("chat");
-  const [isLoading, setIsLoading] = useState(true);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [copied, setCopied] = useState(false);
 
-  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const handleShare = async () => {
+    haptic("light");
+    const botUsername = process.env.NEXT_PUBLIC_BOT_USERNAME || "AfterhoursAudioBot";
+    const inviteUrl = `https://t.me/${botUsername}?startapp=room_${roomId}`;
 
-  const fetchRoomData = async () => {
-    try {
-      const data = await api.rooms.get(roomId);
-      setRoom(data);
-
-      // Playback synchronization / drift correction
-      if (data.current_track) {
-        if (!currentTrack || currentTrack.id !== data.current_track.id) {
-          playTrack(data.current_track);
-          if (data.playback_position_ms > 0) {
-            seek(data.playback_position_ms / 1000);
-          }
-        } else {
-          // Check drift
-          const targetSeconds = data.playback_position_ms / 1000;
-          const drift = Math.abs(currentTime - targetSeconds);
-          if (drift > 2.0 && data.is_playing) {
-            seek(targetSeconds);
-          }
-        }
+    if (typeof navigator !== "undefined" && navigator.share) {
+      try {
+        await navigator.share({
+          title: `Join ${room?.name || "Listening Room"} on Afterhours`,
+          text: `🎧 Join my synchronized listening room "${room?.name || "Afterhours Room"}"!`,
+          url: inviteUrl,
+        });
+        return;
+      } catch {
+        // Fallback to clipboard
       }
+    }
 
-      // Sync messages
-      const msgs = await api.rooms.getMessages(roomId);
-      setMessages(msgs);
-    } catch (err: any) {
-      // Room not found or closed
-    } finally {
-      setIsLoading(false);
+    try {
+      if (typeof navigator !== "undefined" && navigator.clipboard) {
+        await navigator.clipboard.writeText(inviteUrl);
+        setCopied(true);
+        setTimeout(() => setCopied(false), 2000);
+      }
+    } catch {
+      // ignore
     }
   };
 
+  // Sync chat messages
   useEffect(() => {
-    // Join room on mount
-    api.rooms.join(roomId).catch(() => {});
-    fetchRoomData();
+    let isSubscribed = true;
+    const fetchMessages = async () => {
+      try {
+        const msgs = await api.rooms.getMessages(roomId);
+        if (isSubscribed) setMessages(msgs);
+      } catch {}
+    };
 
-    // Polling sync (fallback to ensure continuous room state sync)
-    pollIntervalRef.current = setInterval(fetchRoomData, 3000);
-
+    fetchMessages();
+    const interval = setInterval(fetchMessages, 3000);
     return () => {
-      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+      isSubscribed = false;
+      clearInterval(interval);
     };
   }, [roomId]);
 
   const handleSendMessage = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newMessage.trim()) return;
+    if (!newMessage.trim() || isSubmitting) return;
 
     haptic("light");
     const content = newMessage.trim();
     setNewMessage("");
+    setIsSubmitting(true);
 
     try {
       const sent = await api.rooms.sendMessage(roomId, content);
       setMessages((prev) => [...prev, sent]);
     } catch {
       // ignore
+    } finally {
+      setIsSubmitting(false);
     }
   };
 
@@ -108,22 +128,42 @@ export default function RoomDetailPage() {
     router.push("/room");
   };
 
-  const handlePlaybackControl = async (playState: boolean) => {
+  const handlePlaybackToggle = async () => {
     haptic("light");
-    togglePlay();
     try {
-      await api.rooms.updatePlayback(roomId, {
-        playback_position_ms: Math.round(currentTime * 1000),
-        is_playing: playState,
-      });
-    } catch {}
+      if (room?.is_playing) {
+        await sendCommand("PAUSE", { position_ms: Math.round(currentTime * 1000) });
+      } else {
+        await sendCommand("PLAY", { position_ms: Math.round(currentTime * 1000) });
+      }
+    } catch (err: any) {
+      console.warn("Playback command error:", err);
+    }
   };
 
-  if (isLoading || !room) {
+  const handleNextTrack = async () => {
+    haptic("light");
+    try {
+      await sendCommand("NEXT_TRACK");
+    } catch (err: any) {
+      console.warn("Next track error:", err);
+    }
+  };
+
+  const handleVote = async (queueItemId: string, vote: number) => {
+    haptic("light");
+    try {
+      await sendCommand("QUEUE_VOTE", { queue_item_id: queueItemId, vote });
+    } catch (err: any) {
+      console.warn("Vote error:", err);
+    }
+  };
+
+  if (!room) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[60vh] space-y-3">
         <div className="w-8 h-8 border-2 border-primary border-t-transparent rounded-full animate-spin" />
-        <span className="text-xs text-content-secondary">Joining listening room...</span>
+        <span className="text-xs text-content-secondary">Calibrating room sync...</span>
       </div>
     );
   }
@@ -134,13 +174,48 @@ export default function RoomDetailPage() {
 
   return (
     <div className="flex flex-col space-y-4">
+      {/* ─── iOS / TELEGRAM WEBVIEW GESTURE GATE ──────────────────────────── */}
+      {needsAudioUnlock && (
+        <div className="flex items-center justify-between p-3.5 rounded-2xl bg-amber-500/10 border border-amber-500/30 text-amber-200 shadow-md">
+          <div className="flex items-center space-x-2.5 min-w-0 pr-2">
+            <Volume2 className="w-5 h-5 shrink-0 text-amber-400" />
+            <div className="flex flex-col">
+              <span className="text-xs font-bold text-amber-300">Tap to Sync Audio</span>
+              <span className="text-[10px] text-amber-200/70">iOS Safari and Telegram WebView require gesture priming</span>
+            </div>
+          </div>
+          <button
+            onClick={() => {
+              haptic("medium");
+              unlockAudio();
+            }}
+            className="px-3.5 py-1.5 text-xs font-bold bg-amber-400 text-black rounded-xl hover:bg-amber-300 shrink-0 shadow-sm"
+          >
+            Sync Now
+          </button>
+        </div>
+      )}
+
       {/* ─── ROOM HEADER ─────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between p-4 rounded-2xl bg-surface/90 border border-border">
         <div className="flex flex-col min-w-0 pr-2">
           <div className="flex items-center space-x-2">
             <h1 className="text-lg font-bold text-content-primary truncate">{room.name}</h1>
-            <span className="px-2 py-0.5 rounded-full bg-primary/20 text-primary text-[10px] font-bold">
+            <span className="px-2 py-0.5 rounded-full bg-primary/20 text-primary text-[10px] font-bold shrink-0">
               {room.listener_count} Listening
+            </span>
+            {/* Sync Status Badge */}
+            <span
+              className={`px-2 py-0.5 rounded-full text-[9px] font-mono font-bold shrink-0 ${
+                syncStatus === "synced"
+                  ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                  : syncStatus === "adjusting"
+                  ? "bg-amber-500/20 text-amber-400 border border-amber-500/30 animate-pulse"
+                  : "bg-blue-500/20 text-blue-400 border border-blue-500/30"
+              }`}
+              title={`Sync: ${syncStatus} (drift: ${currentDriftMs}ms)`}
+            >
+              {syncStatus.toUpperCase()} {Math.abs(currentDriftMs) > 20 && `(${Math.abs(currentDriftMs)}ms)`}
             </span>
           </div>
           <span className="text-xs text-content-secondary mt-0.5">
@@ -150,15 +225,15 @@ export default function RoomDetailPage() {
 
         <div className="flex items-center space-x-2">
           <button
-            onClick={() => {
-              haptic("light");
-              navigator.clipboard?.writeText(window.location.href);
-              alert("Invite link copied to clipboard!");
-            }}
-            className="w-9 h-9 flex items-center justify-center rounded-full bg-white/5 text-content-secondary hover:text-content-primary"
-            title="Share room"
+            onClick={handleShare}
+            className={`w-9 h-9 flex items-center justify-center rounded-full transition-all ${
+              copied
+                ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/30"
+                : "bg-white/5 text-content-secondary hover:text-content-primary"
+            }`}
+            title={copied ? "Link copied!" : "Share room invite"}
           >
-            <Share2 className="w-4 h-4" />
+            {copied ? <Check className="w-4 h-4 text-emerald-400" /> : <Share2 className="w-4 h-4" />}
           </button>
 
           <button
@@ -176,13 +251,20 @@ export default function RoomDetailPage() {
         <div className="flex items-center space-x-3 overflow-hidden flex-1 pr-3">
           <div className="relative w-12 h-12 flex-shrink-0 rounded-xl overflow-hidden bg-surface-light border border-border/40">
             <img
-              src={room.current_track?.artwork_thumb_url || room.current_track?.artwork_url || "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=200&q=80"}
+              src={
+                room.current_track?.artwork_thumb_url ||
+                room.current_track?.artwork_url ||
+                "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=200&q=80"
+              }
               alt=""
               className="w-full h-full object-cover"
             />
           </div>
           <div className="flex flex-col min-w-0">
-            <span className="text-xs uppercase font-bold tracking-wider text-primary">Now Playing</span>
+            <div className="flex items-center space-x-1.5">
+              <Radio className="w-3 h-3 text-primary animate-pulse" />
+              <span className="text-[10px] uppercase font-bold tracking-wider text-primary">Now Playing</span>
+            </div>
             <span className="text-sm font-bold text-content-primary truncate">
               {room.current_track?.title || "No track active"}
             </span>
@@ -193,12 +275,21 @@ export default function RoomDetailPage() {
         </div>
 
         {canControl && (
-          <button
-            onClick={() => handlePlaybackControl(!isPlaying)}
-            className="w-11 h-11 flex items-center justify-center rounded-full bg-primary hover:bg-primary-hover text-white shadow-lg shadow-primary/30 transition-all active:scale-95"
-          >
-            {isPlaying ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
-          </button>
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={handlePlaybackToggle}
+              className="w-11 h-11 flex items-center justify-center rounded-full bg-primary hover:bg-primary-hover text-white shadow-lg shadow-primary/30 transition-all active:scale-95"
+            >
+              {room.is_playing ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
+            </button>
+            <button
+              onClick={handleNextTrack}
+              className="w-9 h-9 flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 text-content-primary transition-all active:scale-95"
+              title="Next Track"
+            >
+              <SkipForward className="w-4 h-4" />
+            </button>
+          </div>
         )}
       </div>
 
@@ -227,7 +318,7 @@ export default function RoomDetailPage() {
           }`}
         >
           <ListMusic className="w-4 h-4" />
-          <span>Queue ({room.queue_tracks?.length ?? 0})</span>
+          <span>Queue ({normalizedQueue.length > 0 ? normalizedQueue.length : room.queue_tracks?.length ?? 0})</span>
         </button>
 
         <button
@@ -285,11 +376,64 @@ export default function RoomDetailPage() {
 
       {activeTab === "queue" && (
         <div className="flex flex-col space-y-2">
-          {(!room.queue_tracks || room.queue_tracks.length === 0) ? (
-            <div className="py-12 text-center text-xs text-content-muted">
-              Queue is empty.
-            </div>
-          ) : (
+          {normalizedQueue.length > 0 ? (
+            normalizedQueue.map((item, idx) => {
+              const track = item.tracks;
+              const title = track?.title || `Track ${idx + 1}`;
+              const artist = track?.artist_name || "Unknown Artist";
+              return (
+                <div
+                  key={item.id}
+                  className="flex items-center justify-between p-2.5 rounded-xl bg-surface/60 border border-border/40"
+                >
+                  <div className="flex items-center space-x-3 overflow-hidden flex-1 min-w-0 pr-2">
+                    <span className="text-xs font-mono text-content-muted w-4 shrink-0">{idx + 1}</span>
+                    <div className="flex flex-col min-w-0">
+                      <span className="text-sm font-semibold text-content-primary truncate">{title}</span>
+                      <span className="text-xs text-content-secondary truncate">{artist}</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center space-x-1.5 shrink-0">
+                    {/* Voting Controls */}
+                    <div className="flex items-center space-x-1 bg-surface-light px-2 py-1 rounded-lg border border-border/40">
+                      <button
+                        onClick={() => handleVote(item.id, 1)}
+                        className="text-content-muted hover:text-emerald-400 transition-colors p-0.5"
+                        title="Upvote"
+                      >
+                        <ThumbsUp className="w-3.5 h-3.5" />
+                      </button>
+                      <span className="text-xs font-bold font-mono text-content-primary min-w-[16px] text-center">
+                        {item.vote_count ?? 0}
+                      </span>
+                      <button
+                        onClick={() => handleVote(item.id, -1)}
+                        className="text-content-muted hover:text-red-400 transition-colors p-0.5"
+                        title="Downvote"
+                      >
+                        <ThumbsDown className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+
+                    {canControl && track && (
+                      <button
+                        onClick={() => {
+                          haptic("light");
+                          sendCommand("PLAY", { track_id: track.id, position_ms: 0 });
+                        }}
+                        className="w-7 h-7 flex items-center justify-center rounded-full bg-white/5 hover:bg-primary text-content-primary hover:text-white transition-colors"
+                        title="Play now"
+                      >
+                        <Play className="w-3 h-3 fill-current ml-0.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })
+          ) : room.queue_tracks && room.queue_tracks.length > 0 ? (
+            // Backward-compatible fallback for legacy queue
             room.queue_tracks.map((t, idx) => (
               <div
                 key={t.id}
@@ -307,12 +451,7 @@ export default function RoomDetailPage() {
                   <button
                     onClick={() => {
                       haptic("light");
-                      playTrack(t);
-                      api.rooms.updatePlayback(roomId, {
-                        current_track_id: t.id,
-                        playback_position_ms: 0,
-                        is_playing: true,
-                      }).catch(() => {});
+                      sendCommand("PLAY", { track_id: t.id, position_ms: 0 });
                     }}
                     className="w-8 h-8 flex items-center justify-center rounded-full bg-white/5 hover:bg-primary text-content-primary hover:text-white transition-colors"
                   >
@@ -321,6 +460,8 @@ export default function RoomDetailPage() {
                 )}
               </div>
             ))
+          ) : (
+            <div className="py-12 text-center text-xs text-content-muted">Queue is empty.</div>
           )}
         </div>
       )}
@@ -352,8 +493,8 @@ export default function RoomDetailPage() {
                 </div>
                 <div className="flex flex-col">
                   <span className="text-sm font-semibold text-content-primary">{m.display_name}</span>
-                  <span className="text-[10px] text-content-muted">
-                    {m.can_control_playback ? "Can DJ" : "Listener"}
+                  <span className="text-[10px] text-content-muted capitalize">
+                    {m.role || (m.can_control_playback ? "DJ" : "Listener")}
                   </span>
                 </div>
               </div>
@@ -363,26 +504,27 @@ export default function RoomDetailPage() {
                   <button
                     onClick={async () => {
                       haptic("light");
+                      const nextRole = m.role === "dj" ? "listener" : "dj";
                       await api.rooms.updateMemberPermissions(roomId, m.user_id, {
-                        can_control_playback: !m.can_control_playback,
-                        can_manage_queue: !m.can_manage_queue,
+                        can_control_playback: nextRole === "dj",
+                        can_manage_queue: nextRole === "dj",
                       });
-                      fetchRoomData();
+                      refreshState();
                     }}
                     className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase transition-colors ${
-                      m.can_control_playback
+                      m.role === "dj" || m.can_control_playback
                         ? "bg-accent/20 text-accent"
                         : "bg-white/5 text-content-muted hover:text-content-primary"
                     }`}
                   >
-                    {m.can_control_playback ? "Revoke DJ" : "Make DJ"}
+                    {m.role === "dj" || m.can_control_playback ? "Revoke DJ" : "Make DJ"}
                   </button>
 
                   <button
                     onClick={async () => {
                       haptic("medium");
                       await api.rooms.kickMember(roomId, m.user_id);
-                      fetchRoomData();
+                      refreshState();
                     }}
                     className="p-1 rounded-lg text-red-400 hover:bg-red-500/10"
                     title="Kick member"

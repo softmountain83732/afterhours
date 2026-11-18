@@ -3,6 +3,7 @@ import { UserProfile, Track, Playlist, Room, ChatMessage, AudioQuality } from ".
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
 
 let authToken: string | null = null;
+let refreshPromise: Promise<string | null> | null = null;
 
 export function setApiToken(token: string | null) {
   authToken = token;
@@ -23,7 +24,32 @@ export function getApiToken(): string | null {
   return authToken;
 }
 
-async function request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+async function refreshDevToken(): Promise<string | null> {
+  if (typeof window === "undefined") return null;
+  if (refreshPromise) return refreshPromise;
+  refreshPromise = (async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/auth/dev`, { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        setApiToken(data.access_token);
+        return data.access_token;
+      }
+    } catch {
+      // fallback
+    } finally {
+      refreshPromise = null;
+    }
+    return null;
+  })();
+  return refreshPromise;
+}
+
+interface RequestOptions extends RequestInit {
+  _retried?: boolean;
+}
+
+async function request<T>(endpoint: string, options: RequestOptions = {}): Promise<T> {
   const token = getApiToken();
   const headers: Record<string, string> = {
     ...(options.headers as Record<string, string> || {}),
@@ -42,6 +68,14 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
     headers,
   });
 
+  if (res.status === 401 && !options._retried && endpoint !== "/api/auth/dev" && endpoint !== "/api/auth/telegram") {
+    setApiToken(null);
+    const newToken = await refreshDevToken();
+    if (newToken) {
+      return request<T>(endpoint, { ...options, _retried: true });
+    }
+  }
+
   if (!res.ok) {
     let errorDetail = "API request failed";
     try {
@@ -59,6 +93,11 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
 // ─── AUTH ────────────────────────────────────────────────────────────────────
 export const api = {
   auth: {
+    dev: () =>
+      request<{ access_token: string; is_new_user: boolean; profile: UserProfile }>(
+        "/api/auth/dev",
+        { method: "POST" }
+      ),
     telegram: (initData: string) =>
       request<{ access_token: string; is_new_user: boolean; profile: UserProfile }>(
         "/api/auth/telegram",
@@ -137,6 +176,14 @@ export const api = {
       return request<{ message: string }>(`/api/rooms/${id}/join${q}`, { method: "POST" });
     },
     leave: (id: string) => request<{ message: string }>(`/api/rooms/${id}/leave`, { method: "POST" }),
+    syncClock: (clientEcho: number) =>
+      request<{ client_echo: number; server_time_ms: number; server_iso: string }>(`/api/rooms/sync/clock?client_echo=${clientEcho}`),
+    dispatchCommand: (roomId: string, action: string, payload: any = {}, expectedRevision?: number) =>
+      request<{ success: boolean; action: string; revision: number; server_timestamp: string; scheduled_start_ms?: number; room: Room }>(
+        `/api/rooms/${roomId}/command`,
+        { method: "POST", body: JSON.stringify({ action, expected_revision: expectedRevision, payload }) }
+      ),
+    getNormalizedQueue: (id: string) => request<any[]>(`/api/rooms/${id}/queue`),
     updatePlayback: (id: string, data: { current_track_id?: string; playback_position_ms: number; is_playing: boolean }) =>
       request<{ message: string; room: Room }>(`/api/rooms/${id}/playback`, { method: "PATCH", body: JSON.stringify(data) }),
     updateQueue: (id: string, queue: string[]) =>

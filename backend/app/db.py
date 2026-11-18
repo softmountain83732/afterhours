@@ -24,6 +24,9 @@ class DatabaseStore:
         self.listening_history: List[Dict[str, Any]] = []
         self.rooms: Dict[str, Dict[str, Any]] = {}
         self.room_members: Dict[str, Dict[str, Dict[str, Any]]] = {}  # room_id -> {user_id -> member_info}
+        self.room_queues: Dict[str, List[Dict[str, Any]]] = {}  # room_id -> list of queue items
+        self.room_queue_votes: Dict[str, Dict[str, int]] = {}  # queue_item_id -> {user_id: 1 or -1}
+        self.room_sync_audit_log: List[Dict[str, Any]] = []
         self.room_messages: Dict[str, List[Dict[str, Any]]] = {}  # room_id -> list of msgs
         self.track_access: List[Dict[str, Any]] = []
         self.upload_jobs: Dict[str, Dict[str, Any]] = {}
@@ -89,6 +92,8 @@ class DatabaseStore:
         # Seed a public demo room
         room_id = str(uuid.uuid4())
         first_track_id = list(self.tracks.keys())[0]
+        now_iso = datetime.now(timezone.utc).isoformat()
+        sample_queue = [t_id for t_id in self.tracks.keys()]
         self.rooms[room_id] = {
             "id": room_id,
             "name": "Global Chillout Lounge",
@@ -101,13 +106,31 @@ class DatabaseStore:
             "current_track_id": first_track_id,
             "playback_position_ms": 15000,
             "is_playing": True,
-            "playback_updated_at": datetime.now(timezone.utc).isoformat(),
-            "queue": [t_id for t_id in self.tracks.keys()],
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "playback_updated_at": now_iso,
+            "revision": 1,
+            "playback_rate": 1.0,
+            "server_timestamp": now_iso,
+            "scheduled_start_ms": None,
+            "updated_by": "system_host",
+            "queue": sample_queue,
+            "created_at": now_iso,
+            "updated_at": now_iso,
         }
         self.room_members[room_id] = {}
         self.room_messages[room_id] = []
+        self.room_queues[room_id] = [
+            {
+                "id": str(uuid.uuid4()),
+                "room_id": room_id,
+                "track_id": tid,
+                "added_by": "system_host",
+                "position": idx,
+                "vote_count": 0,
+                "played_at": None,
+                "created_at": now_iso,
+            }
+            for idx, tid in enumerate(sample_queue)
+        ]
 
 
 db = DatabaseStore()

@@ -10,6 +10,7 @@ interface AuthContextType {
   isLoading: boolean;
   isGuest: boolean;
   loginWithTelegram: (initData?: string) => Promise<UserProfile>;
+  loginWithDev: () => Promise<UserProfile>;
   loginAsGuest: (displayName?: string) => Promise<UserProfile>;
   updateProfile: (data: Partial<UserProfile>) => Promise<UserProfile>;
   logout: () => void;
@@ -21,6 +22,7 @@ const AuthContext = createContext<AuthContextType>({
   isLoading: true,
   isGuest: false,
   loginWithTelegram: async () => ({} as UserProfile),
+  loginWithDev: async () => ({} as UserProfile),
   loginAsGuest: async () => ({} as UserProfile),
   updateProfile: async () => ({} as UserProfile),
   logout: () => {},
@@ -44,10 +46,25 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
+  const loginWithDev = async () => {
+    setIsLoading(true);
+    try {
+      const response = await api.auth.dev();
+      setApiToken(response.access_token);
+      setUser(response.profile);
+      return response.profile;
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
   const loginWithTelegram = async (customInitData?: string) => {
     setIsLoading(true);
     try {
-      const dataToUse = customInitData || initData || "mock_123456_alex_Alex";
+      const dataToUse = customInitData || initData;
+      if (!dataToUse) {
+        return loginWithDev();
+      }
       const response = await api.auth.telegram(dataToUse);
       setApiToken(response.access_token);
       setUser(response.profile);
@@ -86,10 +103,13 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const existingToken = getApiToken();
     if (existingToken) {
       refreshUser().finally(() => setIsLoading(false));
+    } else if (initData) {
+      loginWithTelegram(initData).catch(() => {
+        loginAsGuest().catch(() => {});
+      });
     } else {
-      // Auto-authenticate with Telegram WebApp initData
-      loginWithTelegram().catch(() => {
-        // Fallback to guest if auto-login fails
+      // Outside Telegram WebApp (e.g., desktop dev browser)
+      loginWithDev().catch(() => {
         loginAsGuest().catch(() => {});
       });
     }
@@ -102,6 +122,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         isLoading,
         isGuest: !!user?.is_guest,
         loginWithTelegram,
+        loginWithDev,
         loginAsGuest,
         updateProfile,
         logout,

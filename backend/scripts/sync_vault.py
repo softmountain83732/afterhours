@@ -28,6 +28,7 @@ from app.db import db
 from app.services.ingestion import IngestionService
 from app.services.supabase_client import supabase_service
 from app.services.telegram import telegram_service
+from app.services.vault_listener import vault_listener_service
 
 logging.basicConfig(
     level=logging.INFO,
@@ -51,7 +52,11 @@ class VaultSynchronizer:
         self.settings = get_settings()
         self.chat_id = chat_id or self.settings.TELEGRAM_VAULT_CHAT_ID
         self.limit = limit
-        self.offset_id = offset_id
+        # Default to latest persistent checkpoint if offset_id not specified
+        if offset_id == 0:
+            self.offset_id = vault_listener_service.get_checkpoint(self.chat_id)
+        else:
+            self.offset_id = offset_id
         self.batch_size = batch_size
         self.dry_run = dry_run
 
@@ -259,6 +264,7 @@ class VaultSynchronizer:
                 db.track_artwork[artwork_id] = artwork_data
 
             self.ingested += 1
+            vault_listener_service.save_checkpoint(self.chat_id, msg_id)
             logger.info(f"✓ Ingested Track [{track_id[:8]}]: '{title}' by {artist_name} ({codec.upper()})")
             return True
 
