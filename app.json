@@ -1,0 +1,12 @@
+{
+  "name": "afterhours-backend",
+  "description": "Afterhours social music streaming platform FastAPI backend",
+  "buildpacks": [
+    {
+      "url": "https://github.com/jonathanong/heroku-buildpack-ffmpeg-latest.git"
+    },
+    {
+      "url": "heroku/python"
+    }
+  ]
+}
