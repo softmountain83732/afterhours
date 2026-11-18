@@ -84,6 +84,51 @@ def test_auth_key_duplicated_self_healing():
         svc.settings.TELEGRAM_STRING_SESSION = orig_session
 
 
+def test_telegram_string_session_sanitization_and_diagnostics():
+    """Verify that TelegramService strips whitespace and surrounding quotes from TELEGRAM_STRING_SESSION."""
+    from unittest.mock import MagicMock
+    from telethon.sessions import StringSession
+    from telethon.crypto import AuthKey
+
+    # Generate a syntactically valid dummy string session
+    s_gen = StringSession()
+    s_gen._dc_id = 2
+    s_gen._server_address = "149.154.167.50"
+    s_gen._port = 443
+    s_gen._auth_key = AuthKey(b"\x01" * 256)
+    valid_str = s_gen.save()
+
+    svc = TelegramService()
+
+    passed_sessions = []
+    def mock_client_init(session, api_id, api_hash):
+        passed_sessions.append(session)
+        mock = AsyncMock()
+        mock.connect = AsyncMock(return_value=True)
+        mock.is_connected = lambda: True
+        mock.is_user_authorized = AsyncMock(return_value=True)
+        me = AsyncMock()
+        me.id = 54321
+        me.username = "test_bot"
+        mock.get_me = AsyncMock(return_value=me)
+        mock.add_event_handler = MagicMock()
+        return mock
+
+    orig_session = svc.settings.TELEGRAM_STRING_SESSION
+    try:
+        svc.settings.TELEGRAM_STRING_SESSION = f'  "{valid_str}"  '
+        with patch("app.services.telegram.TelegramClient", side_effect=mock_client_init):
+            import asyncio
+            asyncio.run(svc.initialize())
+
+        assert len(passed_sessions) == 1
+        assert passed_sessions[0].dc_id == 2
+        assert bool(passed_sessions[0].auth_key) is True
+        assert svc.is_connected is True
+    finally:
+        svc.settings.TELEGRAM_STRING_SESSION = orig_session
+
+
 def test_telegram_start_deep_link_handler():
     """Verify TelegramService registers /start handler and handles room_ / track_ deep links."""
     svc = TelegramService()

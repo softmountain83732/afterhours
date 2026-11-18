@@ -128,11 +128,18 @@ class TelegramService:
         Includes automatic self-healing if existing session is invalidated by Telegram.
         """
         # Guard against placeholder / unconfigured credentials
-        if (
-            self.settings.TELEGRAM_API_ID == 1234567
-            or not self.settings.TELEGRAM_API_HASH
-            or self.settings.TELEGRAM_API_HASH.startswith("placeholder")
-        ):
+        api_id = self.settings.TELEGRAM_API_ID
+        api_hash = self.settings.TELEGRAM_API_HASH or ""
+        is_default_api_id = (api_id == 1234567)
+        is_placeholder_hash = not api_hash or api_hash.startswith("placeholder")
+
+        if is_default_api_id or is_placeholder_hash:
+            logger.warning(
+                "Telegram initialization skipped: credentials not configured "
+                "(TELEGRAM_API_ID is_default=%s, TELEGRAM_API_HASH is_placeholder=%s).",
+                is_default_api_id,
+                is_placeholder_hash,
+            )
             self._is_connected = False
             return
 
@@ -164,12 +171,28 @@ class TelegramService:
             self._is_connected = False
 
             needs_fresh_session = False
-            configured_session = self.settings.TELEGRAM_STRING_SESSION or ""
+            raw_session = self.settings.TELEGRAM_STRING_SESSION or ""
+            if not isinstance(raw_session, str):
+                raw_session = str(raw_session) if raw_session else ""
+            configured_session = raw_session.strip().strip("'\"")
 
             # 1. Attempt connection with configured session
             try:
                 session_obj = StringSession(configured_session)
-            except Exception:
+                logger.info(
+                    "Initialized StringSession: DC=%s, server=%s, has_auth_key=%s, length=%d chars (was_wrapped=%s).",
+                    getattr(session_obj, "dc_id", None),
+                    getattr(session_obj, "server_address", None),
+                    bool(getattr(session_obj, "auth_key", None)),
+                    len(configured_session),
+                    raw_session.strip() != configured_session,
+                )
+            except Exception as e:
+                logger.warning(
+                    "Failed to parse configured TELEGRAM_STRING_SESSION (%s: %s). Falling back to empty session.",
+                    type(e).__name__,
+                    str(e),
+                )
                 session_obj = StringSession("")
                 needs_fresh_session = True
 
@@ -180,20 +203,26 @@ class TelegramService:
             )
 
             try:
+                logger.info("Connecting Telethon client to Telegram DC %s...", getattr(session_obj, "dc_id", "default"))
                 await client.connect()
-                if not await client.is_user_authorized():
-                    # Session connected but not authorized; check if bot token can log in
+                is_authed = await client.is_user_authorized() if client.is_connected() else False
+                logger.info("Telethon connect finished: is_connected=%s, is_user_authorized=%s.", client.is_connected(), is_authed)
+
+                if not is_authed:
+                    logger.warning("Telegram session connected but client is not authorized in Telegram DC.")
                     if self.settings.TELEGRAM_BOT_TOKEN and not self.settings.TELEGRAM_BOT_TOKEN.startswith("placeholder"):
+                        logger.info("Attempting authentication using configured TELEGRAM_BOT_TOKEN...")
                         await client.start(bot_token=self.settings.TELEGRAM_BOT_TOKEN)
                     else:
+                        logger.warning("No valid TELEGRAM_BOT_TOKEN configured for fallback authentication.")
                         needs_fresh_session = True
             except (AuthKeyDuplicatedError, AuthKeyUnregisteredError, SecurityError) as e:
-                logger.warning(f"Configured Telegram session key was invalidated ({type(e).__name__}); recovering with fresh session.")
+                logger.warning(f"Configured Telegram session key was rejected by Telegram ({type(e).__name__}: {e}); recovering with fresh session.")
                 needs_fresh_session = True
             except Exception as e:
                 err_lower = str(e).lower()
                 if "authorization key" in err_lower or "auth key" in err_lower or "session" in err_lower:
-                    logger.warning(f"Telegram session connection error ({type(e).__name__}); recovering with fresh session.")
+                    logger.warning(f"Telegram session connection error ({type(e).__name__}: {e}); recovering with fresh session.")
                     needs_fresh_session = True
                 else:
                     logger.error(f"Failed to connect Telegram client: {type(e).__name__}: {e}")
@@ -211,7 +240,10 @@ class TelegramService:
                     pass
 
                 if not self.settings.TELEGRAM_BOT_TOKEN or self.settings.TELEGRAM_BOT_TOKEN.startswith("placeholder"):
-                    logger.error("Cannot recover Telegram session: TELEGRAM_BOT_TOKEN is not configured.")
+                    logger.error(
+                        "Cannot recover Telegram session: TELEGRAM_BOT_TOKEN is not configured or placeholder. "
+                        "A valid TELEGRAM_STRING_SESSION or TELEGRAM_BOT_TOKEN is required."
+                    )
                     return
 
                 logger.info("Initializing fresh Telethon session using bot token...")
@@ -240,7 +272,8 @@ class TelegramService:
             # 3. Verify final authorization status
             try:
                 is_authorized = await client.is_user_authorized() if client.is_connected() else False
-            except Exception:
+            except Exception as exc:
+                logger.warning("Exception during final authorization verification (%s: %s).", type(exc).__name__, str(exc))
                 is_authorized = False
 
             if client.is_connected() and is_authorized:
@@ -253,9 +286,9 @@ class TelegramService:
                     self.bot_username = username
                     if not self.settings.TELEGRAM_BOT_USERNAME:
                         self.settings.TELEGRAM_BOT_USERNAME = username
-                    logger.info(f"Telegram client connected and authorized as @{username} (ID: {me.id})")
-                except Exception:
-                    logger.info("Telegram client connected and authorized.")
+                    logger.info("Telegram client connected and authorized as @%s (ID: %s)", username, getattr(me, "id", "unknown"))
+                except Exception as exc:
+                    logger.info("Telegram client connected and authorized (%s: %s).", type(exc).__name__, str(exc))
 
                 # Configure WebApp Menu Button
                 try:
@@ -310,7 +343,11 @@ class TelegramService:
                     except Exception as exc:
                         logger.debug(f"Could not register /start handler: {exc}")
             else:
-                logger.error(f"Telegram client connected ({client.is_connected()}) but user is not authorized ({is_authorized}). Client not usable.")
+                logger.error(
+                    "Telegram client authorization failed: client connected=%s, authorized=%s.",
+                    client.is_connected() if client else False,
+                    is_authorized,
+                )
                 try:
                     await client.disconnect()
                 except Exception:
