@@ -3,6 +3,7 @@
 from pathlib import Path
 from functools import lru_cache
 from typing import Optional
+import os
 from pydantic_settings import BaseSettings
 from pydantic import field_validator
 
@@ -50,6 +51,43 @@ class Settings(BaseSettings):
 
     # Environment
     ENVIRONMENT: str = "development"
+
+    @field_validator("SUPABASE_URL", mode="before")
+    @classmethod
+    def sanitize_supabase_url(cls, v: Optional[str]) -> str:
+        """Sanitize SUPABASE_URL (strip quotes/whitespace) and check common environment aliases."""
+        val = (str(v) if v is not None else "").strip().strip("'\"")
+        if not val or val == "http://localhost:54321" or val.startswith("placeholder"):
+            alt = os.environ.get("NEXT_PUBLIC_SUPABASE_URL") or os.environ.get("SUPABASE_PROJECT_URL")
+            if alt:
+                return alt.strip().strip("'\"")
+        return val or "http://localhost:54321"
+
+    @field_validator("SUPABASE_ANON_KEY", mode="before")
+    @classmethod
+    def sanitize_supabase_anon_key(cls, v: Optional[str]) -> str:
+        """Sanitize SUPABASE_ANON_KEY (strip quotes/whitespace) and check common environment aliases."""
+        val = (str(v) if v is not None else "").strip().strip("'\"")
+        if not val or val == "placeholder-anon-key" or val.startswith("placeholder"):
+            alt = os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY") or os.environ.get("SUPABASE_KEY")
+            if alt:
+                return alt.strip().strip("'\"")
+        return val or "placeholder-anon-key"
+
+    @field_validator("SUPABASE_SERVICE_ROLE_KEY", mode="before")
+    @classmethod
+    def sanitize_supabase_service_role_key(cls, v: Optional[str]) -> str:
+        """Sanitize SUPABASE_SERVICE_ROLE_KEY (strip quotes/whitespace) and check common environment aliases."""
+        val = (str(v) if v is not None else "").strip().strip("'\"")
+        if not val or val == "placeholder-service-role-key" or val.startswith("placeholder"):
+            alt = (
+                os.environ.get("SUPABASE_SERVICE_KEY")
+                or os.environ.get("SUPABASE_SECRET_KEY")
+                or os.environ.get("SERVICE_ROLE_KEY")
+            )
+            if alt:
+                return alt.strip().strip("'\"")
+        return val or "placeholder-service-role-key"
 
     @field_validator("MAX_AUDIO_CACHE_MB", mode="after")
     @classmethod

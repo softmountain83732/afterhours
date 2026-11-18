@@ -21,6 +21,7 @@ from app.routers import (
     history,
     uploads,
 )
+from app.services.supabase_client import supabase_service
 from app.services.telegram import telegram_service
 from app.services.vault_listener import vault_listener_service
 
@@ -41,6 +42,19 @@ async def lifespan(app: FastAPI):
 
     logger.info(f"Resolved audio cache directory: {settings.AUDIO_CACHE_DIR}")
     logger.info(f"Resolved artwork cache directory: {settings.ARTWORK_CACHE_DIR}")
+
+    # Supabase service diagnostic status at startup
+    if supabase_service.is_live:
+        logger.info(
+            "Supabase service ready at startup: is_live=True (admin=%s, client=%s).",
+            supabase_service.admin_client is not None,
+            supabase_service.client is not None,
+        )
+    else:
+        logger.warning(
+            "Supabase service is NOT live at startup (reason: %s).",
+            supabase_service.offline_reason,
+        )
 
     # Initialize Telegram Telethon MTProto client and start Vault listener
     try:
