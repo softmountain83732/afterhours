@@ -20,6 +20,15 @@ export default function SetupPage() {
   const [error, setError] = useState("");
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  React.useEffect(() => {
+    if (user?.display_name && !displayName) {
+      setDisplayName(user.display_name);
+    }
+    if (user?.username && !username) {
+      setUsername(user.username);
+    }
+  }, [user]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!displayName.trim() || !username.trim() || isSubmitting) return;

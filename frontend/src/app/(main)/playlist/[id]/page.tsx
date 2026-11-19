@@ -42,6 +42,33 @@ export default function PlaylistDetailPage() {
     loadData();
   }, [playlistId]);
 
+  // Telegram BackButton support
+  useEffect(() => {
+    const tg = typeof window !== "undefined" ? (window as any).Telegram?.WebApp : null;
+    const backBtn = tg?.BackButton;
+
+    const handleBack = () => {
+      haptic("light");
+      if (showAddModal) {
+        setShowAddModal(false);
+      } else {
+        router.push("/playlist");
+      }
+    };
+
+    if (backBtn) {
+      backBtn.show();
+      backBtn.onClick(handleBack);
+    }
+
+    return () => {
+      if (backBtn) {
+        backBtn.offClick(handleBack);
+        backBtn.hide();
+      }
+    };
+  }, [showAddModal, router, haptic]);
+
   const handlePlayAll = () => {
     if (playlist?.tracks && playlist.tracks.length > 0) {
       haptic("light");

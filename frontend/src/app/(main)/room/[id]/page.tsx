@@ -83,6 +83,29 @@ export default function RoomDetailPage() {
     }
   };
 
+  // Telegram BackButton support
+  useEffect(() => {
+    const tg = typeof window !== "undefined" ? (window as any).Telegram?.WebApp : null;
+    const backBtn = tg?.BackButton;
+
+    const handleBack = () => {
+      haptic("light");
+      router.push("/room");
+    };
+
+    if (backBtn) {
+      backBtn.show();
+      backBtn.onClick(handleBack);
+    }
+
+    return () => {
+      if (backBtn) {
+        backBtn.offClick(handleBack);
+        backBtn.hide();
+      }
+    };
+  }, [router, haptic]);
+
   // Sync chat messages
   useEffect(() => {
     let isSubscribed = true;

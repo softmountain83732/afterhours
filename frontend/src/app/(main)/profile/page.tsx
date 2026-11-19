@@ -23,7 +23,7 @@ import { usePlayer } from "@/contexts/player-context";
 import { useTelegram } from "@/contexts/telegram-context";
 
 export default function ProfilePage() {
-  const { user, isGuest, updateProfile, logout } = useAuth();
+  const { user, isGuest, isAuthenticated, isInitializing, updateProfile, logout } = useAuth();
   const { playTrack } = usePlayer();
   const { haptic } = useTelegram();
 
@@ -61,8 +61,15 @@ export default function ProfilePage() {
   };
 
   useEffect(() => {
-    loadUserData();
-  }, [user]);
+    if (isInitializing) return;
+    if (isAuthenticated) {
+      loadUserData();
+    } else {
+      setUploads([]);
+      setHistory([]);
+      setIsLoading(false);
+    }
+  }, [isInitializing, isAuthenticated, user]);
 
   const handleUploadSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

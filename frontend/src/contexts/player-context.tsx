@@ -30,6 +30,7 @@ interface PlayerContextType {
   addToQueue: (track: Track) => void;
   playNext: (track: Track) => void;
   removeFromQueue: (index: number) => void;
+  insertTrackAt: (track: Track, index: number) => void;
   reorderQueue: (fromIndex: number, toIndex: number) => void;
   clearQueue: () => void;
   toggleShuffle: () => void;
@@ -65,6 +66,7 @@ const PlayerContext = createContext<PlayerContextType>({
   addToQueue: () => {},
   playNext: () => {},
   removeFromQueue: () => {},
+  insertTrackAt: () => {},
   reorderQueue: () => {},
   clearQueue: () => {},
   toggleShuffle: () => {},
@@ -434,6 +436,17 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     });
   };
 
+  const insertTrackAt = (track: Track, index: number) => {
+    haptic("light");
+    setQueue((prev) => {
+      const updated = [...prev];
+      const targetIdx = Math.max(0, Math.min(index, updated.length));
+      updated.splice(targetIdx, 0, track);
+      queueRef.current = updated;
+      return updated;
+    });
+  };
+
   const reorderQueue = (fromIndex: number, toIndex: number) => {
     haptic("medium");
     setQueue((prev) => {
@@ -573,6 +586,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         addToQueue,
         playNext,
         removeFromQueue,
+        insertTrackAt,
         reorderQueue,
         clearQueue,
         toggleShuffle,

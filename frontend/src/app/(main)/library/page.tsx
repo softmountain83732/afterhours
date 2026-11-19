@@ -8,6 +8,7 @@ import { TrackCard } from "@/components/ui/track-card";
 import { TrackContextMenu } from "@/components/ui/track-context-menu";
 import { Track } from "@/lib/types";
 import { api } from "@/lib/api";
+import { useAuth } from "@/contexts/auth-context";
 import { usePlayer } from "@/contexts/player-context";
 import { useTelegram } from "@/contexts/telegram-context";
 
@@ -22,6 +23,7 @@ export default function LibraryPage() {
   // Single context menu coordinator for the page
   const [contextMenuTrack, setContextMenuTrack] = useState<Track | null>(null);
 
+  const { isAuthenticated, isInitializing, isGuest } = useAuth();
   const { playTrack } = usePlayer();
   const { haptic } = useTelegram();
 
@@ -48,8 +50,16 @@ export default function LibraryPage() {
 
   useEffect(() => {
     loadTracks();
-    loadFavorites();
-  }, [loadTracks, loadFavorites]);
+  }, [loadTracks]);
+
+  useEffect(() => {
+    if (isInitializing) return;
+    if (isAuthenticated) {
+      loadFavorites();
+    } else {
+      setFavorites([]);
+    }
+  }, [isInitializing, isAuthenticated, loadFavorites]);
 
   const handleSearch = (val: string) => {
     setQuery(val);

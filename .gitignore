@@ -18,9 +18,13 @@ venv/
 *.session
 *.session-*
 *.session-journal
+backend/sessions/
+sessions/
 
 # Generated cache
 backend/cache/
+cache/
+*.db
 
 # Logs
 *.log

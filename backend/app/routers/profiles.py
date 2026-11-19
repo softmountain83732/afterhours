@@ -55,10 +55,28 @@ async def setup_profile(req: ProfileSetupRequest, user: dict = Depends(get_curre
         if req.avatar_url:
             update_data["avatar_url"] = req.avatar_url
 
-        up_res = admin.table("profiles").update(update_data).eq("id", user_id).execute()
-        if not up_res.data:
-            raise HTTPException(status_code=404, detail="Profile not found")
-        profile = up_res.data[0]
+        # Check if profile row exists in profiles
+        check_res = admin.table("profiles").select("id").eq("id", user_id).execute()
+        if check_res.data:
+            try:
+                up_res = admin.table("profiles").update({**update_data, "profile_completed": True}).eq("id", user_id).execute()
+            except Exception:
+                up_res = admin.table("profiles").update(update_data).eq("id", user_id).execute()
+            profile = up_res.data[0] if up_res.data else {**update_data, "id": user_id}
+        else:
+            tg_id = user.get("telegram_id") or 0
+            new_prof = {
+                "id": user_id,
+                "telegram_id": tg_id,
+                **update_data,
+                "is_guest": False,
+            }
+            try:
+                ins_res = admin.table("profiles").insert({**new_prof, "profile_completed": True}).execute()
+            except Exception:
+                ins_res = admin.table("profiles").insert(new_prof).execute()
+            profile = ins_res.data[0] if ins_res.data else new_prof
+
         profile["profile_completed"] = True
         db.profiles[user_id] = profile
         db.profiles_by_username[desired_username] = user_id
@@ -66,7 +84,11 @@ async def setup_profile(req: ProfileSetupRequest, user: dict = Depends(get_curre
 
     profile = db.profiles.get(user_id)
     if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
+        profile = {
+            "id": user_id,
+            "telegram_id": user.get("telegram_id", 0),
+            "is_guest": False,
+        }
 
     existing_owner = db.profiles_by_username.get(desired_username)
     if existing_owner and existing_owner != user_id:
@@ -99,12 +121,59 @@ async def setup_profile(req: ProfileSetupRequest, user: dict = Depends(get_curre
 async def get_my_profile(user: dict = Depends(get_current_user)):
     """Get current user's profile with detailed statistics."""
     user_id = user["sub"]
+    is_guest = user.get("is_guest", False)
 
+    # 1. Guest handling: never return 404 for an authenticated guest session
+    if is_guest:
+        guest_prof = db.profiles.get(user_id) or {
+            "id": user_id,
+            "telegram_id": 0,
+            "username": user.get("username", "guest"),
+            "display_name": "Guest Listener",
+            "bio": "Guest Listener",
+            "avatar_url": None,
+            "gender": None,
+            "gender_public": False,
+            "is_guest": True,
+            "profile_completed": True,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        return {
+            **guest_prof,
+            "uploads_count": 0,
+            "playlists_count": 0,
+            "favorites_count": 0,
+        }
+
+    # 2. Supabase mode
     if supabase_service.is_live:
         admin = supabase_service.get_admin()
         prof_res = admin.table("profiles").select("*").eq("id", user_id).execute()
+
+        # If authenticated non-guest user has no profile row in Supabase, return skeleton requiring setup
         if not prof_res.data:
-            raise HTTPException(status_code=404, detail="Profile not found")
+            tg_id = user.get("telegram_id", 0)
+            skeleton = {
+                "id": user_id,
+                "telegram_id": tg_id,
+                "username": user.get("username", f"user_{tg_id}"),
+                "display_name": user.get("username", "New Listener"),
+                "bio": "",
+                "avatar_url": None,
+                "gender": None,
+                "gender_public": False,
+                "is_guest": False,
+                "profile_completed": False,
+                "uploads_count": 0,
+                "playlists_count": 0,
+                "favorites_count": 0,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            db.profiles[user_id] = skeleton
+            return skeleton
+
         profile = prof_res.data[0]
 
         # Statistics
@@ -117,17 +186,37 @@ async def get_my_profile(user: dict = Depends(get_current_user)):
         fav_res = admin.table("favorites").select("id", count="exact").eq("user_id", user_id).execute()
         favorites_count = fav_res.count or len(fav_res.data or [])
 
+        is_completed = profile.get("profile_completed")
+        if is_completed is None:
+            is_completed = bool(profile.get("bio") or profile.get("gender") is not None or profile.get("avatar_url"))
+
         return {
             **profile,
-            "profile_completed": bool(profile.get("bio") or profile.get("gender") is not None or profile.get("avatar_url")),
+            "profile_completed": bool(is_completed),
             "uploads_count": uploads_count,
             "playlists_count": playlists_count,
             "favorites_count": favorites_count,
         }
 
+    # 3. In-memory mode
     profile = db.profiles.get(user_id)
     if not profile:
-        raise HTTPException(status_code=404, detail="Profile not found")
+        tg_id = user.get("telegram_id", 0)
+        profile = {
+            "id": user_id,
+            "telegram_id": tg_id,
+            "username": user.get("username", f"user_{tg_id}"),
+            "display_name": user.get("username", "New Listener"),
+            "bio": "",
+            "avatar_url": None,
+            "gender": None,
+            "gender_public": False,
+            "is_guest": False,
+            "profile_completed": False,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        db.profiles[user_id] = profile
 
     my_uploads_count = sum(1 for t in db.tracks.values() if t.get("uploaded_by") == user_id)
     my_playlists_count = sum(1 for p in db.playlists.values() if p.get("user_id") == user_id)
@@ -145,6 +234,27 @@ async def get_my_profile(user: dict = Depends(get_current_user)):
 async def update_my_profile(req: ProfileUpdateRequest, user: dict = Depends(get_current_user)):
     """Update profile fields."""
     user_id = user["sub"]
+
+    if user.get("is_guest"):
+        guest_prof = db.profiles.get(user_id) or {
+            "id": user_id,
+            "username": user.get("username", "guest"),
+            "display_name": "Guest Listener",
+            "is_guest": True,
+            "profile_completed": True,
+        }
+        if req.display_name is not None:
+            guest_prof["display_name"] = req.display_name.strip()
+        if req.bio is not None:
+            guest_prof["bio"] = req.bio.strip()
+        if req.gender is not None:
+            guest_prof["gender"] = req.gender
+        if req.gender_public is not None:
+            guest_prof["gender_public"] = req.gender_public
+        if req.avatar_url is not None:
+            guest_prof["avatar_url"] = req.avatar_url
+        db.profiles[user_id] = guest_prof
+        return guest_prof
 
     if supabase_service.is_live:
         admin = supabase_service.get_admin()

@@ -5,6 +5,7 @@ import { Plus, ListMusic, X } from "lucide-react";
 import { PlaylistCard } from "@/components/ui/playlist-card";
 import { Playlist } from "@/lib/types";
 import { api } from "@/lib/api";
+import { useAuth } from "@/contexts/auth-context";
 import { useTelegram } from "@/contexts/telegram-context";
 
 export default function PlaylistsPage() {
@@ -16,6 +17,7 @@ export default function PlaylistsPage() {
   const [isPublic, setIsPublic] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  const { isAuthenticated, isInitializing, isGuest } = useAuth();
   const { haptic } = useTelegram();
 
   const loadPlaylists = async () => {
@@ -31,8 +33,14 @@ export default function PlaylistsPage() {
   };
 
   useEffect(() => {
-    loadPlaylists();
-  }, []);
+    if (isInitializing) return;
+    if (isAuthenticated) {
+      loadPlaylists();
+    } else {
+      setPlaylists([]);
+      setIsLoading(false);
+    }
+  }, [isInitializing, isAuthenticated]);
 
   const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();

@@ -156,7 +156,10 @@ async def telegram_auth(req: TelegramAuthRequest):
         if res.data:
             profile = res.data[0]
             user_id = profile["id"]
-            profile["profile_completed"] = bool(profile.get("bio") or profile.get("gender") is not None or profile.get("avatar_url"))
+            is_completed = profile.get("profile_completed")
+            if is_completed is None:
+                is_completed = bool(profile.get("bio") or profile.get("gender") is not None or profile.get("avatar_url"))
+            profile["profile_completed"] = bool(is_completed)
         else:
             is_new_user = True
             # Unique username
@@ -201,7 +204,10 @@ async def telegram_auth(req: TelegramAuthRequest):
                 "gender_public": False,
                 "is_guest": False,
             }
-            admin.table("profiles").insert(profile).execute()
+            try:
+                admin.table("profiles").insert({**profile, "profile_completed": False}).execute()
+            except Exception:
+                admin.table("profiles").insert(profile).execute()
             profile["profile_completed"] = False
 
         db.profiles[user_id] = profile
@@ -256,7 +262,7 @@ async def telegram_auth(req: TelegramAuthRequest):
 
 
 @router.post("/guest")
-async def guest_auth(req: GuestAuthRequest):
+async def guest_auth(req: GuestAuthRequest = GuestAuthRequest()):
     """Create a temporary guest session."""
     user_id = str(uuid.uuid4())
     guest_num = len([p for p in db.profiles.values() if p.get("is_guest")]) + 1

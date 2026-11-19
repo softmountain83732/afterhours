@@ -14,9 +14,11 @@ import {
   ArrowLeft,
   Loader2,
   Music,
+  Plus,
 } from "lucide-react";
 import { Track, Playlist } from "@/lib/types";
 import { api } from "@/lib/api";
+import { useAuth } from "@/contexts/auth-context";
 import { usePlayer } from "@/contexts/player-context";
 import { useTelegram } from "@/contexts/telegram-context";
 
@@ -42,10 +44,11 @@ export const TrackContextMenu: React.FC<TrackContextMenuProps> = ({
   onFilterArtist,
   onFilterAlbum,
 }) => {
+  const { isGuest } = useAuth();
   const { toggleFavorite, addToQueue, playNext } = usePlayer();
   const { haptic } = useTelegram();
 
-  const [view, setView] = useState<"menu" | "playlists">("menu");
+  const [view, setView] = useState<"menu" | "playlists" | "create_playlist">("menu");
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
   const [isLoadingPlaylists, setIsLoadingPlaylists] = useState(false);
   const [playlistActionStatus, setPlaylistActionStatus] = useState<{
@@ -54,12 +57,53 @@ export const TrackContextMenu: React.FC<TrackContextMenuProps> = ({
   } | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
+  // Create playlist form state
+  const [newPlaylistName, setNewPlaylistName] = useState("");
+  const [newPlaylistDesc, setNewPlaylistDesc] = useState("");
+  const [isCreatingPlaylist, setIsCreatingPlaylist] = useState(false);
+  const [createPlaylistError, setCreatePlaylistError] = useState("");
+
+  // Telegram BackButton integration for context menu layer
+  useEffect(() => {
+    if (!isOpen) return;
+
+    const tg = typeof window !== "undefined" ? (window as any).Telegram?.WebApp : null;
+    const backBtn = tg?.BackButton;
+
+    const handleBack = () => {
+      haptic("light");
+      if (view === "create_playlist") {
+        setView("playlists");
+      } else if (view === "playlists") {
+        setView("menu");
+      } else {
+        onClose();
+      }
+    };
+
+    if (backBtn) {
+      backBtn.show();
+      backBtn.onClick(handleBack);
+    }
+
+    return () => {
+      if (backBtn) {
+        backBtn.offClick(handleBack);
+        backBtn.hide();
+      }
+    };
+  }, [isOpen, view, onClose, haptic]);
+
   // Reset view when opening/closing
   useEffect(() => {
     if (!isOpen) {
       setView("menu");
       setToastMessage(null);
       setPlaylistActionStatus(null);
+      setNewPlaylistName("");
+      setNewPlaylistDesc("");
+      setCreatePlaylistError("");
+      setIsCreatingPlaylist(false);
     }
   }, [isOpen]);
 
@@ -128,7 +172,45 @@ export const TrackContextMenu: React.FC<TrackContextMenuProps> = ({
       showToast(`Added to ${playlist.name}`);
     } catch {
       setPlaylistActionStatus(null);
-      showToast("Failed to add to playlist", false);
+      showToast("Track already in playlist or failed", false);
+    }
+  };
+
+  const handleCreatePlaylistSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmedName = newPlaylistName.trim();
+    if (!trimmedName || isCreatingPlaylist) return;
+
+    if (isGuest) {
+      setCreatePlaylistError("Please sign in with Telegram to create playlists.");
+      return;
+    }
+
+    haptic("medium");
+    setIsCreatingPlaylist(true);
+    setCreatePlaylistError("");
+
+    try {
+      // 1. Create playlist
+      const created = await api.playlists.create({
+        name: trimmedName,
+        description: newPlaylistDesc.trim() || undefined,
+        is_public: false,
+      });
+
+      // 2. Automatically add currently selected track
+      try {
+        await api.playlists.addTrack(created.id, track.id);
+      } catch {
+        // Track add failed, but playlist was created
+      }
+
+      // 3. Update in-memory list
+      setPlaylists((prev) => [{ ...created, track_count: 1 }, ...prev]);
+      showToast(`Created "${created.name}" and added track!`);
+    } catch (err: any) {
+      setCreatePlaylistError(err.message || "Failed to create playlist");
+      setIsCreatingPlaylist(false);
     }
   };
 
@@ -245,7 +327,7 @@ export const TrackContextMenu: React.FC<TrackContextMenuProps> = ({
           </div>
         )}
 
-        {/* Dynamic Views: Main Menu vs Playlist Picker */}
+        {/* Dynamic Views: Main Menu vs Playlists vs Create Playlist */}
         <div className="overflow-y-auto max-h-[60vh] py-2 divide-y divide-border/20">
           {view === "menu" ? (
             <div className="flex flex-col py-1">
@@ -375,7 +457,7 @@ export const TrackContextMenu: React.FC<TrackContextMenuProps> = ({
                 </div>
               </button>
             </div>
-          ) : (
+          ) : view === "playlists" ? (
             /* Playlist Picker View */
             <div className="flex flex-col py-1">
               <div className="flex items-center space-x-2 px-4 py-2 border-b border-border/30">
@@ -393,6 +475,29 @@ export const TrackContextMenu: React.FC<TrackContextMenuProps> = ({
                 </span>
               </div>
 
+              {/* Create New Playlist Action */}
+              <button
+                onClick={() => {
+                  haptic("light");
+                  if (isGuest) {
+                    showToast("Sign in with Telegram to create playlists", false);
+                    return;
+                  }
+                  setView("create_playlist");
+                }}
+                className="w-full flex items-center space-x-3 px-4 py-3 text-left bg-primary/10 hover:bg-primary/20 border-b border-border/30 text-primary transition-colors"
+              >
+                <div className="w-8 h-8 rounded-full bg-primary/20 flex items-center justify-center">
+                  <Plus className="w-4 h-4" />
+                </div>
+                <div className="flex flex-col min-w-0">
+                  <span className="text-sm font-bold">Create New Playlist</span>
+                  <span className="text-[11px] text-primary/70">
+                    Add this track to a new playlist
+                  </span>
+                </div>
+              </button>
+
               {isLoadingPlaylists ? (
                 <div className="flex flex-col items-center justify-center py-8 space-y-2">
                   <Loader2 className="w-5 h-5 text-primary animate-spin" />
@@ -404,10 +509,10 @@ export const TrackContextMenu: React.FC<TrackContextMenuProps> = ({
                 <div className="flex flex-col items-center justify-center py-8 text-center px-4 space-y-2">
                   <Music className="w-8 h-8 text-content-muted/50" />
                   <span className="text-xs text-content-secondary">
-                    No custom playlists found.
+                    No custom playlists found yet.
                   </span>
                   <span className="text-[11px] text-content-muted">
-                    Create playlists from your Library or Profile.
+                    Tap above to create your first playlist.
                   </span>
                 </div>
               ) : (
@@ -444,6 +549,86 @@ export const TrackContextMenu: React.FC<TrackContextMenuProps> = ({
                 })
               )}
             </div>
+          ) : (
+            /* Create Playlist Form View */
+            <form onSubmit={handleCreatePlaylistSubmit} className="flex flex-col p-4 space-y-4">
+              <div className="flex items-center space-x-2 pb-2 border-b border-border/30">
+                <button
+                  type="button"
+                  onClick={() => {
+                    haptic("light");
+                    setView("playlists");
+                  }}
+                  className="p-1 rounded-full text-content-secondary hover:text-content-primary hover:bg-surface-light transition-colors"
+                >
+                  <ArrowLeft className="w-4 h-4" />
+                </button>
+                <span className="text-sm font-semibold text-content-primary">
+                  Create Playlist
+                </span>
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-content-secondary block mb-1">
+                  Playlist Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  autoFocus
+                  maxLength={100}
+                  value={newPlaylistName}
+                  onChange={(e) => setNewPlaylistName(e.target.value)}
+                  placeholder="e.g. Late Night Vibes"
+                  className="w-full px-3.5 py-2.5 rounded-xl bg-surface-light border border-border text-sm text-content-primary placeholder:text-content-muted focus:outline-none focus:border-primary"
+                />
+              </div>
+
+              <div>
+                <label className="text-xs font-semibold text-content-secondary block mb-1">
+                  Description (Optional)
+                </label>
+                <textarea
+                  rows={2}
+                  maxLength={300}
+                  value={newPlaylistDesc}
+                  onChange={(e) => setNewPlaylistDesc(e.target.value)}
+                  placeholder="A curated mix for late night listening"
+                  className="w-full px-3.5 py-2 rounded-xl bg-surface-light border border-border text-sm text-content-primary placeholder:text-content-muted focus:outline-none focus:border-primary resize-none"
+                />
+              </div>
+
+              {createPlaylistError && (
+                <div className="text-xs text-red-400 bg-red-500/10 p-2.5 rounded-xl border border-red-500/20">
+                  {createPlaylistError}
+                </div>
+              )}
+
+              <div className="flex items-center space-x-2 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setView("playlists")}
+                  className="flex-1 py-2.5 rounded-xl bg-surface-hover hover:bg-surface-light border border-border text-xs font-semibold text-content-secondary transition-colors"
+                >
+                  Cancel
+                </button>
+
+                <button
+                  type="submit"
+                  disabled={isCreatingPlaylist || !newPlaylistName.trim()}
+                  className="flex-1 py-2.5 rounded-xl bg-primary hover:bg-primary-hover text-white text-xs font-bold shadow-lg shadow-primary/25 disabled:opacity-50 transition-all active:scale-[0.98] flex items-center justify-center space-x-1.5"
+                >
+                  {isCreatingPlaylist ? (
+                    <>
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      <span>Creating...</span>
+                    </>
+                  ) : (
+                    <span>Create & Add Track</span>
+                  )}
+                </button>
+              </div>
+            </form>
           )}
         </div>
       </div>

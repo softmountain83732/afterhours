@@ -327,3 +327,89 @@ def test_favorites_and_history():
     history_entries = client.get("/api/history", headers=headers).json()
     assert len(history_entries) > 0
     assert history_entries[0]["track"]["id"] == track_id
+
+
+def test_telegram_auth_with_bot_api_7_signature_parameter():
+    """Telegram Bot API 7.0+ adds a 'signature' param to initData. Ensure it doesn't cause 401."""
+    init_data = generate_valid_tg_init_data(tg_id=88888, username="sig_test_user")
+    # Append the Bot API 7.0+ Ed25519 signature
+    init_data_with_sig = f"{init_data}&signature=AQABbW9jay1zaWduYXR1cmUtZGF0YQ"
+    
+    res = client.post("/api/auth/telegram", json={"init_data": init_data_with_sig})
+    assert res.status_code == 200, f"Expected 200, got {res.status_code}: {res.text}"
+    data = res.json()
+    assert "access_token" in data
+    assert data["profile"]["username"] == "sig_test_user"
+
+
+def test_validate_telegram_init_data_handles_token_whitespace_and_quotes():
+    """Ensure bot tokens with leading/trailing spaces or quotes are sanitized properly."""
+    from app.auth import validate_telegram_init_data
+    raw_token = "123456:ABC-DEF1234ghIkl-zyx57W2v1u123ew11"
+    
+    # Generate initData with raw token
+    user_json = json.dumps({"id": 11111, "first_name": "Sanitize", "username": "clean_token"})
+    params = {
+        "auth_date": str(int(time.time())),
+        "query_id": "AAHdF6IQAAAAAN0XohDhrP_V",
+        "user": user_json
+    }
+    data_check_string = "\n".join(f"{k}={v}" for k, v in sorted(params.items()))
+    secret_key = hmac.new(b"WebAppData", raw_token.encode("utf-8"), hashlib.sha256).digest()
+    cal_hash = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
+    params["hash"] = cal_hash
+    init_data = urllib.parse.urlencode(params)
+
+    # Validate with quoted/padded bot tokens
+    for padded_token in [f"  {raw_token}  ", f'"{raw_token}"', f"'{raw_token}'", f" '\"{raw_token}\"' "]:
+        user_info = validate_telegram_init_data(init_data, padded_token)
+        assert user_info is not None, f"Failed validation with padded token: {padded_token}"
+        assert user_info["id"] == 11111
+
+
+def test_guest_profile_get_returns_200_not_404():
+    """Guest users must be able to call GET /api/profiles/me without 404."""
+    guest_res = client.post("/api/auth/guest")
+    assert guest_res.status_code == 200
+    guest_token = guest_res.json()["access_token"]
+    guest_headers = {"Authorization": f"Bearer {guest_token}"}
+
+    profile_res = client.get("/api/profiles/me", headers=guest_headers)
+    assert profile_res.status_code == 200
+    profile = profile_res.json()
+    assert profile["is_guest"] is True
+    assert profile["profile_completed"] is True
+    assert "Guest" in profile["display_name"]
+
+
+def test_new_user_missing_supabase_profile_returns_skeleton_200():
+    """A user whose profile row has not yet been written to Supabase should receive a setup skeleton, not 404."""
+    from unittest.mock import MagicMock, patch
+    from app.services.supabase_client import supabase_service
+
+    init_data = generate_valid_tg_init_data(tg_id=99999, username="new_unregistered_user", first_name="Newbie")
+    auth_res = client.post("/api/auth/telegram", json={"init_data": init_data})
+    assert auth_res.status_code == 200
+    token = auth_res.json()["access_token"]
+    headers = {"Authorization": f"Bearer {token}"}
+
+    # Simulate Supabase returning empty list (row does not exist)
+    mock_admin = MagicMock()
+    mock_table = MagicMock()
+    mock_select = MagicMock()
+    mock_eq = MagicMock()
+    mock_execute = MagicMock(return_value=MagicMock(data=[]))
+    mock_eq.execute = mock_execute
+    mock_select.eq = MagicMock(return_value=mock_eq)
+    mock_table.select = MagicMock(return_value=mock_select)
+    mock_admin.table = MagicMock(return_value=mock_table)
+
+    with patch.object(supabase_service, "_is_live", True), \
+         patch.object(supabase_service, "get_admin", return_value=mock_admin):
+        me_res = client.get("/api/profiles/me", headers=headers)
+        assert me_res.status_code == 200
+        data = me_res.json()
+        assert data["profile_completed"] is False
+        assert data["username"] == "new_unregistered_user"
+        assert data["display_name"] in {"new_unregistered_user", "Newbie"}
+

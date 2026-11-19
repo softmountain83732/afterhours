@@ -7,17 +7,17 @@ import { AlertCircle, RefreshCw, UserCheck } from "lucide-react";
 
 export default function Home() {
   const router = useRouter();
-  const { user, isLoading, authError, retryAuth, continueAsGuest } = useAuth();
+  const { user, authState, isInitializing, requiresSetup, authError, retryAuth, continueAsGuest } = useAuth();
 
   useEffect(() => {
-    if (!isLoading && !authError) {
-      if (user && user.profile_completed === false) {
+    if (!isInitializing && !authError) {
+      if (requiresSetup) {
         router.replace("/setup");
       } else if (user) {
         router.replace("/library");
       }
     }
-  }, [user, isLoading, authError, router]);
+  }, [user, isInitializing, requiresSetup, authError, router]);
 
   if (authError) {
     return (
