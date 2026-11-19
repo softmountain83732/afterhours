@@ -1,6 +1,6 @@
 "use client";
 
-import React, { createContext, useContext, useEffect, useRef, useState } from "react";
+import React, { createContext, useContext, useEffect, useRef, useState, useCallback } from "react";
 import { Track, AudioQuality } from "@/lib/types";
 import { api } from "@/lib/api";
 import { useTelegram } from "./telegram-context";
@@ -28,6 +28,10 @@ interface PlayerContextType {
   next: () => void;
   previous: () => void;
   addToQueue: (track: Track) => void;
+  playNext: (track: Track) => void;
+  removeFromQueue: (index: number) => void;
+  reorderQueue: (fromIndex: number, toIndex: number) => void;
+  clearQueue: () => void;
   toggleShuffle: () => void;
   toggleRepeat: () => void;
   setQuality: (quality: AudioQuality) => void;
@@ -59,6 +63,10 @@ const PlayerContext = createContext<PlayerContextType>({
   next: () => {},
   previous: () => {},
   addToQueue: () => {},
+  playNext: () => {},
+  removeFromQueue: () => {},
+  reorderQueue: () => {},
+  clearQueue: () => {},
   toggleShuffle: () => {},
   toggleRepeat: () => {},
   setQuality: () => {},
@@ -71,6 +79,8 @@ export const usePlayer = () => useContext(PlayerContext);
 
 export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  // React state
   const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -84,8 +94,42 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [isFullPlayerOpen, setIsFullPlayerOpen] = useState(false);
   const [playbackRate, setPlaybackRateState] = useState(1.0);
 
+  // Synchronized refs to guarantee zero stale closures in audio event listeners
+  const currentTrackRef = useRef<Track | null>(null);
+  const queueRef = useRef<Track[]>([]);
+  const originalQueueRef = useRef<Track[]>([]);
+  const isShuffleRef = useRef<boolean>(false);
+  const repeatModeRef = useRef<"off" | "all" | "one">("off");
+  const qualityRef = useRef<AudioQuality>("standard");
+  const isPlayingRef = useRef<boolean>(false);
+  const isTransitioningRef = useRef<boolean>(false);
+
   const { haptic } = useTelegram();
-  const playStartTimestampRef = useRef<number>(0);
+
+  // Sync state to refs on every render
+  useEffect(() => {
+    currentTrackRef.current = currentTrack;
+  }, [currentTrack]);
+
+  useEffect(() => {
+    queueRef.current = queue;
+  }, [queue]);
+
+  useEffect(() => {
+    isShuffleRef.current = isShuffle;
+  }, [isShuffle]);
+
+  useEffect(() => {
+    repeatModeRef.current = repeatMode;
+  }, [repeatMode]);
+
+  useEffect(() => {
+    qualityRef.current = quality;
+  }, [quality]);
+
+  useEffect(() => {
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
 
   const setPlaybackRate = (rate: number) => {
     if (audioRef.current) {
@@ -96,7 +140,147 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const getAudioElement = () => audioRef.current;
 
-  // Initialize audio element
+  // Internal track playback executor
+  const playTrackInternal = useCallback((track: Track, newQueue?: Track[]) => {
+    if (!audioRef.current) return;
+
+    // Record previous track history if played for at least 5 seconds
+    const prev = currentTrackRef.current;
+    if (prev && audioRef.current.currentTime > 5) {
+      api.history.record(prev.id, Math.round(audioRef.current.currentTime * 1000)).catch(() => {});
+    }
+
+    setCurrentTrack(track);
+    currentTrackRef.current = track;
+
+    if (newQueue) {
+      setQueue(newQueue);
+      queueRef.current = newQueue;
+      originalQueueRef.current = [...newQueue];
+    } else if (!queueRef.current.some((t) => t.id === track.id)) {
+      const updated = [track, ...queueRef.current];
+      setQueue(updated);
+      queueRef.current = updated;
+    }
+
+    const streamUrl = api.streaming.getUrl(track.id, qualityRef.current);
+    audioRef.current.src = streamUrl;
+    audioRef.current.currentTime = 0;
+    setCurrentTime(0);
+    setDuration(track.duration_ms ? track.duration_ms / 1000 : 0);
+
+    audioRef.current.play().catch(() => {
+      setIsPlaying(false);
+      isPlayingRef.current = false;
+    });
+  }, []);
+
+  const playTrack = useCallback((track: Track, newQueue?: Track[]) => {
+    haptic("light");
+    playTrackInternal(track, newQueue);
+  }, [haptic, playTrackInternal]);
+
+  // Robust Next Track Handler with Repeat & Shuffle Awareness
+  const next = useCallback(() => {
+    haptic("light");
+    const currentQueue = queueRef.current;
+    const cur = currentTrackRef.current;
+    if (currentQueue.length === 0 || !cur) return;
+
+    const currentIndex = currentQueue.findIndex((t) => t.id === cur.id);
+
+    if (currentIndex >= 0 && currentIndex < currentQueue.length - 1) {
+      playTrackInternal(currentQueue[currentIndex + 1]);
+    } else if (repeatModeRef.current === "all" && currentQueue.length > 0) {
+      playTrackInternal(currentQueue[0]);
+    } else if (repeatModeRef.current === "one" && audioRef.current) {
+      audioRef.current.currentTime = 0;
+      audioRef.current.play().catch(() => {});
+    } else {
+      // End of queue in repeat "off" mode: stop cleanly
+      setIsPlaying(false);
+      isPlayingRef.current = false;
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+    }
+  }, [haptic, playTrackInternal]);
+
+  // Previous Track Handler
+  const previous = useCallback(() => {
+    haptic("light");
+    const audio = audioRef.current;
+    const currentQueue = queueRef.current;
+    const cur = currentTrackRef.current;
+    if (!audio || currentQueue.length === 0 || !cur) return;
+
+    // If more than 3 seconds in, restart current track
+    if (audio.currentTime > 3) {
+      audio.currentTime = 0;
+      setCurrentTime(0);
+      return;
+    }
+
+    const currentIndex = currentQueue.findIndex((t) => t.id === cur.id);
+    if (currentIndex > 0) {
+      playTrackInternal(currentQueue[currentIndex - 1]);
+    } else if (currentQueue.length > 0) {
+      playTrackInternal(currentQueue[currentQueue.length - 1]);
+    }
+  }, [haptic, playTrackInternal]);
+
+  // Track End Handler (Autoplay Engine)
+  const handleTrackEnd = useCallback(() => {
+    if (isTransitioningRef.current) return;
+    isTransitioningRef.current = true;
+    setTimeout(() => {
+      isTransitioningRef.current = false;
+    }, 500);
+
+    const cur = currentTrackRef.current;
+    const audio = audioRef.current;
+    if (cur && audio) {
+      const listenedMs = Math.round(audio.currentTime * 1000);
+      if (listenedMs > 5000) {
+        api.history.record(cur.id, listenedMs).catch(() => {});
+      }
+    }
+
+    const mode = repeatModeRef.current;
+    const currentQueue = queueRef.current;
+
+    // Repeat One: replay current track immediately
+    if (mode === "one" && audio && cur) {
+      audio.currentTime = 0;
+      audio.play().catch(() => {});
+      return;
+    }
+
+    if (!cur || currentQueue.length === 0) {
+      setIsPlaying(false);
+      isPlayingRef.current = false;
+      return;
+    }
+
+    const currentIndex = currentQueue.findIndex((t) => t.id === cur.id);
+
+    if (currentIndex >= 0 && currentIndex < currentQueue.length - 1) {
+      // Autoplay next track in queue
+      playTrackInternal(currentQueue[currentIndex + 1]);
+    } else if (mode === "all" && currentQueue.length > 0) {
+      // Repeat All: loop back to first track in queue
+      playTrackInternal(currentQueue[0]);
+    } else {
+      // Repeat Off: finish playback at end of queue
+      setIsPlaying(false);
+      isPlayingRef.current = false;
+      if (audio) {
+        audio.pause();
+      }
+    }
+  }, [playTrackInternal]);
+
+  // Audio element setup and lifecycle
   useEffect(() => {
     const audio = new Audio();
     audio.preload = "auto";
@@ -108,7 +292,11 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     const onTimeUpdate = () => {
       setCurrentTime(audio.currentTime);
       if (audio.buffered.length > 0) {
-        setBuffered(audio.buffered.end(audio.buffered.length - 1));
+        try {
+          setBuffered(audio.buffered.end(audio.buffered.length - 1));
+        } catch {
+          // ignore index errors
+        }
       }
     };
 
@@ -118,8 +306,15 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
     };
 
-    const onPlay = () => setIsPlaying(true);
-    const onPause = () => setIsPlaying(false);
+    const onPlay = () => {
+      setIsPlaying(true);
+      isPlayingRef.current = true;
+    };
+
+    const onPause = () => {
+      setIsPlaying(false);
+      isPlayingRef.current = false;
+    };
 
     const onEnded = () => {
       handleTrackEnd();
@@ -139,7 +334,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       audio.removeEventListener("pause", onPause);
       audio.removeEventListener("ended", onEnded);
     };
-  }, []);
+  }, [handleTrackEnd]);
 
   // Media Session API for Lock Screen & Background Playback controls
   useEffect(() => {
@@ -172,51 +367,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         }
       });
     } catch {}
-  }, [currentTrack, isPlaying]);
-
-  const handleTrackEnd = () => {
-    // Record history
-    if (currentTrack && audioRef.current) {
-      const listenedMs = Math.round(audioRef.current.currentTime * 1000);
-      if (listenedMs > 10000) {
-        api.history.record(currentTrack.id, listenedMs).catch(() => {});
-      }
-    }
-
-    if (repeatMode === "one" && audioRef.current) {
-      audioRef.current.currentTime = 0;
-      audioRef.current.play().catch(() => {});
-    } else {
-      next();
-    }
-  };
-
-  const playTrack = (track: Track, newQueue?: Track[]) => {
-    haptic("light");
-    if (!audioRef.current) return;
-
-    // Record previous track history if listened
-    if (currentTrack && audioRef.current.currentTime > 10) {
-      api.history.record(currentTrack.id, Math.round(audioRef.current.currentTime * 1000)).catch(() => {});
-    }
-
-    setCurrentTrack(track);
-    if (newQueue) {
-      setQueue(newQueue);
-    } else if (!queue.some((t) => t.id === track.id)) {
-      setQueue((prev) => [track, ...prev]);
-    }
-
-    const streamUrl = api.streaming.getUrl(track.id, quality);
-    audioRef.current.src = streamUrl;
-    audioRef.current.currentTime = 0;
-    setCurrentTime(0);
-    setDuration(track.duration_ms ? track.duration_ms / 1000 : 0);
-
-    audioRef.current.play().catch(() => {
-      setIsPlaying(false);
-    });
-  };
+  }, [currentTrack, isPlaying, next, previous]);
 
   const togglePlay = () => {
     haptic("light");
@@ -243,62 +394,116 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setCurrentTime(timeSeconds);
   };
 
-  const next = () => {
-    haptic("light");
-    if (queue.length === 0 || !currentTrack) return;
-    const currentIndex = queue.findIndex((t) => t.id === currentTrack.id);
-
-    if (isShuffle) {
-      const remaining = queue.filter((t) => t.id !== currentTrack.id);
-      if (remaining.length > 0) {
-        const randomTrack = remaining[Math.floor(Math.random() * remaining.length)];
-        playTrack(randomTrack);
-        return;
-      }
-    }
-
-    if (currentIndex >= 0 && currentIndex < queue.length - 1) {
-      playTrack(queue[currentIndex + 1]);
-    } else if (repeatMode === "all" && queue.length > 0) {
-      playTrack(queue[0]);
-    }
-  };
-
-  const previous = () => {
-    haptic("light");
-    if (!audioRef.current || queue.length === 0 || !currentTrack) return;
-    // If more than 3 seconds in, restart track
-    if (audioRef.current.currentTime > 3) {
-      audioRef.current.currentTime = 0;
-      setCurrentTime(0);
-      return;
-    }
-
-    const currentIndex = queue.findIndex((t) => t.id === currentTrack.id);
-    if (currentIndex > 0) {
-      playTrack(queue[currentIndex - 1]);
-    } else if (queue.length > 0) {
-      playTrack(queue[queue.length - 1]);
-    }
-  };
-
+  // Queue Operations
   const addToQueue = (track: Track) => {
     haptic("light");
-    setQueue((prev) => [...prev, track]);
+    setQueue((prev) => {
+      const updated = [...prev, track];
+      queueRef.current = updated;
+      return updated;
+    });
+    originalQueueRef.current.push(track);
   };
 
+  const playNext = (track: Track) => {
+    haptic("light");
+    setQueue((prev) => {
+      const cur = currentTrackRef.current;
+      if (!cur) {
+        queueRef.current = [track, ...prev];
+        return [track, ...prev];
+      }
+      const curIndex = prev.findIndex((t) => t.id === cur.id);
+      const updated = [...prev];
+      if (curIndex >= 0) {
+        updated.splice(curIndex + 1, 0, track);
+      } else {
+        updated.unshift(track);
+      }
+      queueRef.current = updated;
+      return updated;
+    });
+  };
+
+  const removeFromQueue = (index: number) => {
+    haptic("light");
+    setQueue((prev) => {
+      const updated = prev.filter((_, idx) => idx !== index);
+      queueRef.current = updated;
+      return updated;
+    });
+  };
+
+  const reorderQueue = (fromIndex: number, toIndex: number) => {
+    haptic("medium");
+    setQueue((prev) => {
+      const updated = [...prev];
+      const [moved] = updated.splice(fromIndex, 1);
+      updated.splice(toIndex, 0, moved);
+      queueRef.current = updated;
+      return updated;
+    });
+  };
+
+  const clearQueue = () => {
+    haptic("medium");
+    setQueue((prev) => {
+      const cur = currentTrackRef.current;
+      const updated = cur ? [cur] : [];
+      queueRef.current = updated;
+      originalQueueRef.current = [...updated];
+      return updated;
+    });
+  };
+
+  // True Queue Shuffling
   const toggleShuffle = () => {
     haptic("light");
-    setIsShuffle((prev) => !prev);
+    const nextShuffle = !isShuffleRef.current;
+    setIsShuffle(nextShuffle);
+    isShuffleRef.current = nextShuffle;
+
+    const cur = currentTrackRef.current;
+    if (nextShuffle) {
+      // Preserve original queue before shuffling
+      originalQueueRef.current = [...queueRef.current];
+      if (cur && queueRef.current.length > 1) {
+        const remaining = queueRef.current.filter((t) => t.id !== cur.id);
+        // Fisher-Yates shuffle algorithm
+        for (let i = remaining.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [remaining[i], remaining[j]] = [remaining[j], remaining[i]];
+        }
+        const shuffled = [cur, ...remaining];
+        setQueue(shuffled);
+        queueRef.current = shuffled;
+      }
+    } else {
+      // Restore original queue order
+      if (originalQueueRef.current.length > 0) {
+        const restored = [...originalQueueRef.current];
+        setQueue(restored);
+        queueRef.current = restored;
+      }
+    }
   };
 
+  // Repeat Modes: "off" -> "all" -> "one" -> "off"
   const toggleRepeat = () => {
     haptic("light");
-    setRepeatMode((prev) => (prev === "off" ? "all" : prev === "all" ? "one" : "off"));
+    const nextMode: "off" | "all" | "one" =
+      repeatModeRef.current === "off"
+        ? "all"
+        : repeatModeRef.current === "all"
+        ? "one"
+        : "off";
+    setRepeatMode(nextMode);
+    repeatModeRef.current = nextMode;
   };
 
   const setQuality = (q: AudioQuality) => {
     setQualityState(q);
+    qualityRef.current = q;
     if (currentTrack && audioRef.current) {
       const curTime = audioRef.current.currentTime;
       const wasPlaying = !audioRef.current.paused;
@@ -366,6 +571,10 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         next,
         previous,
         addToQueue,
+        playNext,
+        removeFromQueue,
+        reorderQueue,
+        clearQueue,
         toggleShuffle,
         toggleRepeat,
         setQuality,

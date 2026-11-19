@@ -15,6 +15,9 @@ import {
   Sliders,
   Radio,
   X,
+  Trash2,
+  ChevronUp,
+  Music2,
 } from "lucide-react";
 import { usePlayer } from "@/contexts/player-context";
 import { useTelegram } from "@/contexts/telegram-context";
@@ -48,6 +51,9 @@ export const FullPlayer: React.FC = () => {
     toggleFavorite,
     queue,
     playTrack,
+    removeFromQueue,
+    reorderQueue,
+    clearQueue,
   } = usePlayer();
 
   const { haptic } = useTelegram();
@@ -249,8 +255,9 @@ export const FullPlayer: React.FC = () => {
           {/* Repeat */}
           <button
             onClick={toggleRepeat}
-            aria-label="Repeat"
-            className={`w-10 h-10 flex items-center justify-center transition-colors ${
+            aria-label={`Repeat mode: ${repeatMode}`}
+            title={`Repeat: ${repeatMode === "off" ? "Off" : repeatMode === "all" ? "Repeat All" : "Repeat One"}`}
+            className={`relative w-10 h-10 flex items-center justify-center transition-colors active:scale-90 ${
               repeatMode !== "off" ? "text-primary" : "text-content-muted hover:text-content-primary"
             }`}
           >
@@ -259,6 +266,9 @@ export const FullPlayer: React.FC = () => {
             ) : (
               <Repeat className="w-5 h-5" />
             )}
+            {repeatMode !== "off" && (
+              <span className="absolute bottom-1 w-1 h-1 rounded-full bg-primary" />
+            )}
           </button>
         </div>
 
@@ -266,7 +276,7 @@ export const FullPlayer: React.FC = () => {
         <div className="flex items-center justify-between pt-2 border-t border-border/40 text-content-secondary">
           <button
             onClick={() => setShowQueue(!showQueue)}
-            className="flex items-center space-x-2 text-xs font-medium hover:text-content-primary transition-colors"
+            className="flex items-center space-x-2 text-xs font-medium hover:text-content-primary transition-colors active:scale-95"
           >
             <ListMusic className="w-4 h-4" />
             <span>Up Next ({queue.length})</span>
@@ -282,13 +292,31 @@ export const FullPlayer: React.FC = () => {
       {showQueue && (
         <div className="absolute inset-0 z-30 bg-surface/98 backdrop-blur-2xl flex flex-col animate-slide-up">
           <div className="flex items-center justify-between p-6 border-b border-border">
-            <h2 className="text-lg font-bold text-content-primary">Playback Queue</h2>
-            <button
-              onClick={() => setShowQueue(false)}
-              className="w-8 h-8 flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 text-content-secondary"
-            >
-              <X className="w-5 h-5" />
-            </button>
+            <div className="flex items-center space-x-3">
+              <h2 className="text-lg font-bold text-content-primary">Playback Queue</h2>
+              <span className="text-xs px-2 py-0.5 rounded-full bg-white/5 text-content-secondary font-mono">
+                {queue.length}
+              </span>
+            </div>
+            <div className="flex items-center space-x-2">
+              {queue.length > 1 && (
+                <button
+                  onClick={() => {
+                    haptic("medium");
+                    clearQueue();
+                  }}
+                  className="px-2.5 py-1 text-xs text-red-400 hover:text-red-300 font-medium transition-colors"
+                >
+                  Clear
+                </button>
+              )}
+              <button
+                onClick={() => setShowQueue(false)}
+                className="w-8 h-8 flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 text-content-secondary"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
           </div>
 
           <div className="flex-1 overflow-y-auto p-4 space-y-2">
@@ -297,34 +325,96 @@ export const FullPlayer: React.FC = () => {
               return (
                 <div
                   key={`${t.id}-${index}`}
-                  onClick={() => {
-                    haptic("light");
-                    playTrack(t);
-                    setShowQueue(false);
-                  }}
-                  className={`flex items-center justify-between p-2.5 rounded-xl cursor-pointer transition-all ${
+                  className={`group flex items-center justify-between p-2.5 rounded-xl transition-all ${
                     isCurrent
                       ? "bg-primary/20 border border-primary/40 text-primary"
                       : "hover:bg-white/5 text-content-primary"
                   }`}
                 >
-                  <div className="flex items-center space-x-3 overflow-hidden">
-                    <div className="w-10 h-10 flex-shrink-0 rounded-lg overflow-hidden bg-surface-light border border-border/40">
+                  <div
+                    onClick={() => {
+                      haptic("light");
+                      playTrack(t);
+                      setShowQueue(false);
+                    }}
+                    className="flex items-center space-x-3 overflow-hidden flex-1 cursor-pointer pr-2"
+                  >
+                    <div className="relative w-10 h-10 flex-shrink-0 rounded-lg overflow-hidden bg-surface-light border border-border/40">
                       <img
                         src={t.artwork_thumb_url || t.artwork_url || artworkThumb}
                         alt=""
                         className="w-full h-full object-cover"
                       />
+                      {isCurrent && isPlaying && (
+                        <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                          <div className="flex items-end space-x-0.5 h-2.5">
+                            <span className="w-0.5 h-2.5 bg-primary animate-pulse" />
+                            <span className="w-0.5 h-1.5 bg-primary animate-pulse delay-75" />
+                            <span className="w-0.5 h-2.5 bg-primary animate-pulse delay-150" />
+                          </div>
+                        </div>
+                      )}
                     </div>
                     <div className="flex flex-col min-w-0">
-                      <span className="text-sm font-semibold truncate">{t.title}</span>
+                      <div className="flex items-center space-x-1.5">
+                        <span className="text-sm font-semibold truncate">{t.title}</span>
+                        {isCurrent && (
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-primary px-1.5 py-0.2 rounded bg-primary/20">
+                            Now
+                          </span>
+                        )}
+                      </div>
                       <span className="text-xs text-content-secondary truncate">{t.artist_name}</span>
                     </div>
                   </div>
 
-                  <span className="text-xs font-mono text-content-muted">
-                    {formatTime(t.duration_ms / 1000)}
-                  </span>
+                  <div className="flex items-center space-x-1">
+                    <span className="text-xs font-mono text-content-muted mr-1">
+                      {formatTime(t.duration_ms / 1000)}
+                    </span>
+
+                    {/* Move Up */}
+                    {index > 0 && !isCurrent && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          reorderQueue(index, index - 1);
+                        }}
+                        title="Move up"
+                        className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-white/10 text-content-muted hover:text-content-primary transition-colors"
+                      >
+                        <ChevronUp className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+
+                    {/* Move Down */}
+                    {index < queue.length - 1 && !isCurrent && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          reorderQueue(index, index + 1);
+                        }}
+                        title="Move down"
+                        className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-white/10 text-content-muted hover:text-content-primary transition-colors"
+                      >
+                        <ChevronDown className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+
+                    {/* Remove from queue */}
+                    {!isCurrent && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          removeFromQueue(index);
+                        }}
+                        title="Remove from queue"
+                        className="w-7 h-7 flex items-center justify-center rounded-lg hover:bg-red-500/10 text-content-muted hover:text-red-400 transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
                 </div>
               );
             })}

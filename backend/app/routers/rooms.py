@@ -241,8 +241,40 @@ async def create_room(req: RoomCreateRequest, user: dict = Depends(get_current_u
             except Exception:
                 pass
 
+        # Register creator as host in room_members
+        try:
+            admin.table("room_members").upsert({
+                "room_id": room_id,
+                "user_id": user_id,
+                "role": "host",
+                "can_control_playback": True,
+                "can_manage_queue": True,
+                "can_invite": True,
+                "can_moderate": True,
+            }, on_conflict="room_id,user_id").execute()
+        except Exception:
+            try:
+                admin.table("room_members").upsert({
+                    "room_id": room_id,
+                    "user_id": user_id,
+                    "can_control_playback": True,
+                    "can_manage_queue": True,
+                }, on_conflict="room_id,user_id").execute()
+            except Exception:
+                pass
+
         db.rooms[room_id] = created_room
-        db.room_members[room_id] = {}
+        db.room_members[room_id] = {
+            user_id: {
+                "user_id": user_id,
+                "role": "host",
+                "can_control_playback": True,
+                "can_manage_queue": True,
+                "can_invite": True,
+                "can_moderate": True,
+                "joined_at": now_iso,
+            }
+        }
         db.room_messages[room_id] = []
         db.room_queues[room_id] = [
             {
@@ -287,7 +319,17 @@ async def create_room(req: RoomCreateRequest, user: dict = Depends(get_current_u
     }
 
     db.rooms[room_id] = room
-    db.room_members[room_id] = {}
+    db.room_members[room_id] = {
+        user_id: {
+            "user_id": user_id,
+            "role": "host",
+            "can_control_playback": True,
+            "can_manage_queue": True,
+            "can_invite": True,
+            "can_moderate": True,
+            "joined_at": now_iso,
+        }
+    }
     db.room_messages[room_id] = []
     db.room_queues[room_id] = [
         {
@@ -521,6 +563,18 @@ async def join_room(
             raise HTTPException(status_code=404, detail="Room not found")
         room = r_res.data[0]
         if user_id == room["host_id"]:
+            try:
+                admin.table("room_members").upsert({
+                    "room_id": room_id,
+                    "user_id": user_id,
+                    "role": "host",
+                    "can_control_playback": True,
+                    "can_manage_queue": True,
+                    "can_invite": True,
+                    "can_moderate": True,
+                }, on_conflict="room_id,user_id").execute()
+            except Exception:
+                pass
             return {"message": "You are the room host"}
 
         if not room.get("is_public") and invite_token != room.get("invite_token"):

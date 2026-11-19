@@ -1,13 +1,17 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
-import { Plus, Radio, Search, X } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Plus, Radio, Search, X, Lock } from "lucide-react";
 import { RoomCard } from "@/components/ui/room-card";
 import { Room } from "@/lib/types";
 import { api } from "@/lib/api";
+import { useAuth } from "@/contexts/auth-context";
 import { useTelegram } from "@/contexts/telegram-context";
 
 export default function RoomsPage() {
+  const router = useRouter();
+  const { user, isGuest } = useAuth();
   const [rooms, setRooms] = useState<Room[]>([]);
   const [query, setQuery] = useState("");
   const [isLoading, setIsLoading] = useState(true);
@@ -15,6 +19,7 @@ export default function RoomsPage() {
   const [newRoomName, setNewRoomName] = useState("");
   const [isPublic, setIsPublic] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [createError, setCreateError] = useState("");
 
   const { haptic } = useTelegram();
 
@@ -38,8 +43,14 @@ export default function RoomsPage() {
     e.preventDefault();
     if (!newRoomName.trim() || isSubmitting) return;
 
+    if (isGuest) {
+      setCreateError("Guest listeners cannot create rooms. Please log in with Telegram.");
+      return;
+    }
+
     haptic("medium");
     setIsSubmitting(true);
+    setCreateError("");
     try {
       const room = await api.rooms.create({
         name: newRoomName.trim(),
@@ -48,10 +59,9 @@ export default function RoomsPage() {
       setIsCreateModalOpen(false);
       setNewRoomName("");
       loadRooms();
-      // Redirect to newly created room
-      window.location.href = `/room/${room.id}`;
+      router.push(`/room/${room.id}`);
     } catch (err: any) {
-      alert(err.message || "Failed to create room");
+      setCreateError(err.message || "Failed to create room");
     } finally {
       setIsSubmitting(false);
     }
@@ -168,6 +178,12 @@ export default function RoomsPage() {
                   className="w-4 h-4 accent-primary rounded cursor-pointer"
                 />
               </div>
+
+              {createError && (
+                <div className="p-2.5 rounded-xl bg-red-500/10 border border-red-500/20 text-red-400 text-xs">
+                  {createError}
+                </div>
+              )}
 
               <button
                 type="submit"

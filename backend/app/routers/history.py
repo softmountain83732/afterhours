@@ -26,7 +26,7 @@ async def get_history(
     """Get recent listening history for current user."""
     user_id = user["sub"]
 
-    if supabase_service.is_live:
+    if supabase_service.is_live and not user.get("is_guest"):
         admin = supabase_service.get_admin()
         res = admin.table("listening_history").select(
             "id, played_at, duration_listened_ms, tracks(*, artists(id, name), albums(id, title, artwork_url, artwork_thumb_url), track_artwork(original_url, thumb_url))"
@@ -73,6 +73,19 @@ async def get_history(
 async def record_play(req: PlayHistoryRecord, user: dict = Depends(get_current_user)):
     """Record a song play event in listening history."""
     user_id = user["sub"]
+
+    if user.get("is_guest"):
+        # Guest listening history is retained in memory only
+        import uuid
+        entry = {
+            "id": str(uuid.uuid4()),
+            "user_id": user_id,
+            "track_id": req.track_id,
+            "duration_listened_ms": req.duration_listened_ms,
+            "played_at": datetime.now(timezone.utc).isoformat(),
+        }
+        db.listening_history.append(entry)
+        return {"message": "Play history recorded (guest session)"}
 
     if supabase_service.is_live:
         admin = supabase_service.get_admin()

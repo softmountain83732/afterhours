@@ -2,11 +2,12 @@
 
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
@@ -26,6 +27,17 @@ from app.services.telegram import telegram_service
 from app.services.vault_listener import vault_listener_service
 
 logger = logging.getLogger("main")
+
+# Redact sensitive parameters from streaming access logs
+class SensitiveLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            record.msg = re.sub(r"([?&]token=)[^&\s]+", r"\1[REDACTED]", record.msg)
+            record.msg = re.sub(r"([?&]tgWebAppData=)[^&\s]+", r"\1[REDACTED]", record.msg)
+        return True
+
+for log_name in ("uvicorn", "uvicorn.access", "main", "streaming_router"):
+    logging.getLogger(log_name).addFilter(SensitiveLogFilter())
 
 
 @asynccontextmanager
@@ -105,10 +117,39 @@ app.add_middleware(
     expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
 )
 
-# Static file serving for cached artwork
+DEFAULT_FALLBACK_ARTWORK_URL = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&q=80"
+
+# Resilient static artwork endpoint with Supabase Storage fetch & fallback redirect
 artwork_dir = Path(settings.ARTWORK_CACHE_DIR)
 artwork_dir.mkdir(parents=True, exist_ok=True)
-app.mount("/api/static/artwork", StaticFiles(directory=str(artwork_dir)), name="artwork")
+
+@app.get("/api/static/artwork/{filename}")
+async def get_static_artwork(filename: str):
+    """
+    Serve cached artwork, fetching from Supabase Storage on dyno restart or falling back to default cover.
+    """
+    cached_path = artwork_dir / filename
+    if cached_path.exists():
+        return FileResponse(str(cached_path))
+
+    # If missing on disk (e.g. after Heroku dyno restart), check Supabase Storage
+    if supabase_service.is_live:
+        admin = supabase_service.get_admin()
+        if admin:
+            try:
+                data = admin.storage.from_("artwork").download(filename)
+                if data:
+                    cached_path.parent.mkdir(parents=True, exist_ok=True)
+                    cached_path.write_bytes(data)
+                    return FileResponse(str(cached_path))
+            except Exception:
+                try:
+                    public_url = admin.storage.from_("artwork").get_public_url(filename)
+                    return RedirectResponse(url=public_url, status_code=307)
+                except Exception:
+                    pass
+
+    return RedirectResponse(url=DEFAULT_FALLBACK_ARTWORK_URL, status_code=307)
 
 # Mount Routers
 app.include_router(auth.router)

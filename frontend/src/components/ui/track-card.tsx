@@ -1,16 +1,20 @@
 "use client";
 
-import React from "react";
-import { Play, Pause, Heart, MoreVertical } from "lucide-react";
+import React, { useState } from "react";
+import { Heart, MoreHorizontal } from "lucide-react";
 import { Track } from "@/lib/types";
 import { usePlayer } from "@/contexts/player-context";
 import { useTelegram } from "@/contexts/telegram-context";
+import { TrackContextMenu } from "./track-context-menu";
 
 interface TrackCardProps {
   track: Track;
   index?: number;
   onSelect?: () => void;
   showCover?: boolean;
+  onOpenContextMenu?: (track: Track) => void;
+  onFilterArtist?: (artistName: string) => void;
+  onFilterAlbum?: (albumTitle: string) => void;
 }
 
 function formatDuration(ms: number): string {
@@ -25,9 +29,13 @@ export const TrackCard: React.FC<TrackCardProps> = ({
   index,
   onSelect,
   showCover = true,
+  onOpenContextMenu,
+  onFilterArtist,
+  onFilterAlbum,
 }) => {
-  const { currentTrack, isPlaying, playTrack, togglePlay, toggleFavorite } = usePlayer();
+  const { currentTrack, isPlaying, playTrack, togglePlay } = usePlayer();
   const { haptic } = useTelegram();
+  const [internalMenuOpen, setInternalMenuOpen] = useState(false);
 
   const isCurrent = currentTrack?.id === track.id;
   const isCurrentlyPlaying = isCurrent && isPlaying;
@@ -45,70 +53,103 @@ export const TrackCard: React.FC<TrackCardProps> = ({
     }
   };
 
-  const artwork = track.artwork_thumb_url || track.artwork_url || "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=300&q=80";
+  const handleMenuClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    haptic("light");
+    if (onOpenContextMenu) {
+      onOpenContextMenu(track);
+    } else {
+      setInternalMenuOpen(true);
+    }
+  };
+
+  const artwork =
+    track.artwork_thumb_url ||
+    track.artwork_url ||
+    "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=300&q=80";
 
   return (
-    <div
-      onClick={handleCardClick}
-      className={`group flex items-center justify-between p-2.5 rounded-xl transition-all cursor-pointer select-none active:scale-[0.99] ${
-        isCurrent ? "bg-surface-light border border-border" : "hover:bg-surface/60"
-      }`}
-    >
-      <div className="flex items-center space-x-3 min-w-0 flex-1 pr-2">
-        {index !== undefined && !showCover && (
-          <span className="w-5 text-center text-xs font-mono text-content-muted">
-            {index + 1}
-          </span>
-        )}
+    <>
+      <div
+        onClick={handleCardClick}
+        className={`group flex items-center justify-between p-2.5 rounded-xl transition-all cursor-pointer select-none active:scale-[0.99] ${
+          isCurrent ? "bg-surface-light border border-border" : "hover:bg-surface/60"
+        }`}
+      >
+        <div className="flex items-center space-x-3 min-w-0 flex-1 pr-2">
+          {index !== undefined && !showCover && (
+            <span className="w-5 text-center text-xs font-mono text-content-muted">
+              {index + 1}
+            </span>
+          )}
 
-        {showCover && (
-          <div className="relative w-11 h-11 flex-shrink-0 rounded-lg overflow-hidden bg-surface-light border border-border/40">
-            <img src={artwork} alt="" className="w-full h-full object-cover" />
-            {isCurrentlyPlaying && (
-              <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-                <div className="flex items-end space-x-0.5 h-3">
-                  <span className="w-0.5 h-3 bg-primary animate-pulse" />
-                  <span className="w-0.5 h-2 bg-primary animate-pulse delay-75" />
-                  <span className="w-0.5 h-3 bg-primary animate-pulse delay-150" />
+          {showCover && (
+            <div className="relative w-11 h-11 flex-shrink-0 rounded-lg overflow-hidden bg-surface-light border border-border/40">
+              <img
+                src={artwork}
+                alt=""
+                className="w-full h-full object-cover"
+                onError={(e) => {
+                  (e.target as HTMLImageElement).src =
+                    "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=300&q=80";
+                }}
+              />
+              {isCurrentlyPlaying && (
+                <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                  <div className="flex items-end space-x-0.5 h-3">
+                    <span className="w-0.5 h-3 bg-primary animate-pulse" />
+                    <span className="w-0.5 h-2 bg-primary animate-pulse delay-75" />
+                    <span className="w-0.5 h-3 bg-primary animate-pulse delay-150" />
+                  </div>
                 </div>
-              </div>
-            )}
-          </div>
-        )}
+              )}
+            </div>
+          )}
 
-        <div className="flex flex-col min-w-0">
-          <span
-            className={`text-sm font-semibold truncate ${
-              isCurrent ? "text-primary" : "text-content-primary"
-            }`}
+          <div className="flex flex-col min-w-0">
+            <div className="flex items-center space-x-1.5 min-w-0">
+              <span
+                className={`text-sm font-semibold truncate ${
+                  isCurrent ? "text-primary" : "text-content-primary"
+                }`}
+              >
+                {track.title}
+              </span>
+              {track.is_favorite && (
+                <Heart className="w-3 h-3 fill-primary text-primary flex-shrink-0" />
+              )}
+            </div>
+            <span className="text-xs text-content-secondary truncate mt-0.5">
+              {track.artist_name}
+            </span>
+          </div>
+        </div>
+
+        <div className="flex items-center space-x-2.5" onClick={(e) => e.stopPropagation()}>
+          <span className="text-xs font-mono text-content-muted">
+            {formatDuration(track.duration_ms)}
+          </span>
+
+          <button
+            onClick={handleMenuClick}
+            aria-label="Track options"
+            className="w-8 h-8 flex items-center justify-center rounded-full text-content-muted hover:text-content-primary hover:bg-white/5 active:scale-90 transition-all"
           >
-            {track.title}
-          </span>
-          <span className="text-xs text-content-secondary truncate">
-            {track.artist_name}
-          </span>
+            <MoreHorizontal className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
-      <div className="flex items-center space-x-2.5" onClick={(e) => e.stopPropagation()}>
-        <span className="text-xs font-mono text-content-muted">
-          {formatDuration(track.duration_ms)}
-        </span>
-
-        <button
-          onClick={() => toggleFavorite(track)}
-          aria-label="Favorite"
-          className="w-8 h-8 flex items-center justify-center rounded-full hover:bg-white/5 active:scale-90 transition-all"
-        >
-          <Heart
-            className={`w-4 h-4 transition-colors ${
-              track.is_favorite
-                ? "fill-primary text-primary"
-                : "text-content-muted hover:text-content-primary"
-            }`}
-          />
-        </button>
-      </div>
-    </div>
+      {/* Internal context menu fallback if no external coordinator provided */}
+      {!onOpenContextMenu && (
+        <TrackContextMenu
+          track={track}
+          isOpen={internalMenuOpen}
+          onClose={() => setInternalMenuOpen(false)}
+          onFilterArtist={onFilterArtist}
+          onFilterAlbum={onFilterAlbum}
+        />
+      )}
+    </>
   );
 };

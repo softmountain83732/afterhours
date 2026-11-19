@@ -15,6 +15,10 @@ logger = logging.getLogger("tracks")
 router = APIRouter(prefix="/api/tracks", tags=["tracks"])
 
 
+DEFAULT_FALLBACK_ARTWORK_URL = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&q=80"
+DEFAULT_FALLBACK_ARTWORK_THUMB_URL = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=300&q=80"
+
+
 def format_track(t: Dict[str, Any], is_favorite: bool = False) -> Dict[str, Any]:
     """Format track record with joined artist, album, and artwork into standard frontend schema."""
     artist_name = "Unknown Artist"
@@ -43,8 +47,8 @@ def format_track(t: Dict[str, Any], is_favorite: bool = False) -> Dict[str, Any]
         art_orig = t["track_artwork"][0].get("original_url")
         art_thumb = t["track_artwork"][0].get("thumb_url")
 
-    artwork_url = art_orig or album_artwork_url or t.get("artwork_url")
-    artwork_thumb_url = art_thumb or album_artwork_thumb_url or t.get("artwork_thumb_url")
+    artwork_url = art_orig or album_artwork_url or t.get("artwork_url") or DEFAULT_FALLBACK_ARTWORK_URL
+    artwork_thumb_url = art_thumb or album_artwork_thumb_url or t.get("artwork_thumb_url") or DEFAULT_FALLBACK_ARTWORK_THUMB_URL
 
     return {
         "id": t["id"],

@@ -59,6 +59,7 @@ async def setup_profile(req: ProfileSetupRequest, user: dict = Depends(get_curre
         if not up_res.data:
             raise HTTPException(status_code=404, detail="Profile not found")
         profile = up_res.data[0]
+        profile["profile_completed"] = True
         db.profiles[user_id] = profile
         db.profiles_by_username[desired_username] = user_id
         return profile
@@ -118,6 +119,7 @@ async def get_my_profile(user: dict = Depends(get_current_user)):
 
         return {
             **profile,
+            "profile_completed": bool(profile.get("bio") or profile.get("gender") is not None or profile.get("avatar_url")),
             "uploads_count": uploads_count,
             "playlists_count": playlists_count,
             "favorites_count": favorites_count,

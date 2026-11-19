@@ -2,7 +2,7 @@
 
 import React, { createContext, useContext, useEffect, useState } from "react";
 
-interface TelegramUser {
+export interface TelegramUser {
   id: number;
   first_name: string;
   last_name?: string;
@@ -43,28 +43,114 @@ export const TelegramProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [user, setUser] = useState<TelegramUser | null>(null);
 
   useEffect(() => {
-    if (typeof window !== "undefined") {
+    if (typeof window === "undefined") return;
+
+    let attempts = 0;
+    const maxAttempts = 30; // 30 * 50ms = 1500ms max detection window
+
+    const extractTelegramData = (): {
+      initData: string;
+      user: TelegramUser | null;
+      startParam: string | null;
+      tg: any;
+    } | null => {
       const tg = (window as any).Telegram?.WebApp;
-      if (tg && tg.initData) {
-        setIsTelegram(true);
-        setInitData(tg.initData);
-        setStartParam(tg.initDataUnsafe?.start_param || null);
-        setUser(tg.initDataUnsafe?.user || null);
 
-        // Tell Telegram the webapp is ready
-        tg.ready();
-        tg.expand();
-
-        // Dark atmospheric theme color matching Afterhours
-        tg.setHeaderColor?.("#08080c");
-        tg.setBackgroundColor?.("#08080c");
-      } else {
-        // Normal browser mode fallback for testing
-        setIsTelegram(false);
-        setInitData("mock_123456_alex_Alex");
+      // 1. Check official Telegram WebApp object
+      if (tg && typeof tg.initData === "string" && tg.initData.trim().length > 0) {
+        return {
+          initData: tg.initData,
+          user: tg.initDataUnsafe?.user || null,
+          startParam: tg.initDataUnsafe?.start_param || null,
+          tg,
+        };
       }
-      setIsReady(true);
-    }
+
+      // 2. Check URL hash for Telegram Web: #tgWebAppData=...
+      if (window.location.hash && window.location.hash.includes("tgWebAppData=")) {
+        try {
+          const hashStr = window.location.hash.substring(1);
+          const hashParams = new URLSearchParams(hashStr);
+          const tgWebAppData = hashParams.get("tgWebAppData");
+          if (tgWebAppData) {
+            const innerParams = new URLSearchParams(tgWebAppData);
+            const userStr = innerParams.get("user");
+            const parsedUser = userStr ? JSON.parse(decodeURIComponent(userStr)) : null;
+            const sp = innerParams.get("start_param");
+            return {
+              initData: tgWebAppData,
+              user: parsedUser,
+              startParam: sp || null,
+              tg,
+            };
+          }
+        } catch {
+          // ignore parsing error
+        }
+      }
+
+      // 3. Check search query for ?tgWebAppData=...
+      const searchParams = new URLSearchParams(window.location.search);
+      const queryInitData = searchParams.get("tgWebAppData");
+      if (queryInitData) {
+        try {
+          const innerParams = new URLSearchParams(queryInitData);
+          const userStr = innerParams.get("user");
+          const parsedUser = userStr ? JSON.parse(decodeURIComponent(userStr)) : null;
+          const sp = innerParams.get("start_param");
+          return {
+            initData: queryInitData,
+            user: parsedUser,
+            startParam: sp || null,
+            tg,
+          };
+        } catch {
+          return {
+            initData: queryInitData,
+            user: null,
+            startParam: null,
+            tg,
+          };
+        }
+      }
+
+      return null;
+    };
+
+    const interval = setInterval(() => {
+      attempts++;
+      const detected = extractTelegramData();
+
+      if (detected) {
+        clearInterval(interval);
+        setIsTelegram(true);
+        setInitData(detected.initData);
+        setStartParam(detected.startParam);
+        setUser(detected.user);
+
+        if (detected.tg) {
+          try {
+            detected.tg.ready?.();
+            detected.tg.expand?.();
+            detected.tg.setHeaderColor?.("#08080c");
+            detected.tg.setBackgroundColor?.("#08080c");
+          } catch {
+            // ignore
+          }
+        }
+        setIsReady(true);
+      } else if (attempts >= maxAttempts) {
+        clearInterval(interval);
+        // Not inside Telegram or initData was not provided
+        setIsTelegram(false);
+        setInitData("");
+        setStartParam(null);
+        setUser(null);
+        setIsReady(true);
+      }
+    }, 50);
+
+    return () => clearInterval(interval);
   }, []);
 
   const haptic = (type: "light" | "medium" | "heavy" | "rigid" | "soft" = "light") => {

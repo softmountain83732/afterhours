@@ -24,6 +24,8 @@ from app.services.telegram import telegram_service
 logger = logging.getLogger("vault_listener")
 
 SUPPORTED_AUDIO_EXTENSIONS = {".flac", ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".wav"}
+DEFAULT_FALLBACK_ARTWORK_URL = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&q=80"
+DEFAULT_FALLBACK_ARTWORK_THUMB_URL = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=300&q=80"
 
 
 class WatermarkTracker:
@@ -438,8 +440,22 @@ class VaultListenerService:
                 bitrate = metadata.get("bitrate")
                 file_size = actual_path.stat().st_size
 
-                # 5. Extract embedded artwork and optimize
+                # 5. Extract artwork (embedded -> Telegram thumb -> dark luxury fallback)
                 artwork_bytes = IngestionService.extract_artwork(actual_path)
+                if not artwork_bytes:
+                    try:
+                        doc = getattr(getattr(message, "media", None), "document", None)
+                        has_thumbs = bool(getattr(doc, "thumbs", None)) or bool(getattr(getattr(message, "file", None), "thumbs", None))
+                        if has_thumbs:
+                            thumb_bytes = await asyncio.wait_for(
+                                message.download_media(file=bytes, thumb=-1),
+                                timeout=30.0
+                            )
+                            if isinstance(thumb_bytes, bytes) and len(thumb_bytes) > 0:
+                                artwork_bytes = thumb_bytes
+                    except Exception as e:
+                        logger.debug(f"Could not extract Telegram thumbnail for msg {msg_id}: {e}")
+
                 artwork_id = None
                 artwork_url = None
                 artwork_thumb_url = None
@@ -450,6 +466,7 @@ class VaultListenerService:
                         full_webp, thumb_webp = IngestionService.optimize_artwork(artwork_bytes)
                         img_hash = IngestionService.compute_image_hash(artwork_bytes)
 
+                        # Write to local cache
                         art_dir = Path(self.settings.ARTWORK_CACHE_DIR)
                         art_dir.mkdir(parents=True, exist_ok=True)
                         full_path = art_dir / f"{img_hash}_full.webp"
@@ -458,10 +475,35 @@ class VaultListenerService:
                         full_path.write_bytes(full_webp)
                         thumb_path.write_bytes(thumb_webp)
 
+                        # Default local URLs
                         artwork_url = f"/api/static/artwork/{img_hash}_full.webp"
                         artwork_thumb_url = f"/api/static/artwork/{img_hash}_thumb.webp"
+
+                        # Persistent Supabase Storage upload
+                        if supabase_service.is_live:
+                            admin = supabase_service.get_admin()
+                            if admin:
+                                try:
+                                    admin.storage.from_("artwork").upload(
+                                        path=f"{img_hash}_full.webp",
+                                        file=full_webp,
+                                        file_options={"content-type": "image/webp", "upsert": "true"}
+                                    )
+                                    admin.storage.from_("artwork").upload(
+                                        path=f"{img_hash}_thumb.webp",
+                                        file=thumb_webp,
+                                        file_options={"content-type": "image/webp", "upsert": "true"}
+                                    )
+                                    artwork_url = admin.storage.from_("artwork").get_public_url(f"{img_hash}_full.webp")
+                                    artwork_thumb_url = admin.storage.from_("artwork").get_public_url(f"{img_hash}_thumb.webp")
+                                except Exception as st_err:
+                                    logger.warning(f"Supabase Storage artwork upload failed for msg {msg_id}: {st_err}")
                     except Exception as e:
                         logger.warning(f"Artwork extraction/optimization failed for msg {msg_id}: {e}")
+
+                if not artwork_url:
+                    artwork_url = DEFAULT_FALLBACK_ARTWORK_URL
+                    artwork_thumb_url = DEFAULT_FALLBACK_ARTWORK_THUMB_URL
 
                 # 6. Upsert Artist & Album
                 artist_id = await self._get_or_create_artist(artist_name)

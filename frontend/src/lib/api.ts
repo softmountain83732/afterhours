@@ -26,6 +26,10 @@ export function getApiToken(): string | null {
 
 async function refreshDevToken(): Promise<string | null> {
   if (typeof window === "undefined") return null;
+  // Never attempt dev auth in production
+  if (!API_BASE.includes("localhost") && !API_BASE.includes("127.0.0.1")) {
+    return null;
+  }
   if (refreshPromise) return refreshPromise;
   refreshPromise = (async () => {
     try {

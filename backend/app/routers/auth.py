@@ -156,6 +156,7 @@ async def telegram_auth(req: TelegramAuthRequest):
         if res.data:
             profile = res.data[0]
             user_id = profile["id"]
+            profile["profile_completed"] = bool(profile.get("bio") or profile.get("gender") is not None or profile.get("avatar_url"))
         else:
             is_new_user = True
             # Unique username
@@ -201,6 +202,7 @@ async def telegram_auth(req: TelegramAuthRequest):
                 "is_guest": False,
             }
             admin.table("profiles").insert(profile).execute()
+            profile["profile_completed"] = False
 
         db.profiles[user_id] = profile
         db.profiles_by_telegram[tg_id] = user_id
@@ -248,7 +250,7 @@ async def telegram_auth(req: TelegramAuthRequest):
     return {
         "access_token": token,
         "token_type": "bearer",
-        "is_new_user": is_new_user or not profile.get("profile_completed", True),
+        "is_new_user": is_new_user or (profile.get("profile_completed") is False),
         "profile": profile
     }
 
@@ -302,9 +304,12 @@ async def get_me(user: dict = Depends(get_current_user)):
         admin = supabase_service.get_admin()
         res = admin.table("profiles").select("*").eq("id", user_id).execute()
         if res.data:
-            return res.data[0]
+            p = res.data[0]
+            p["profile_completed"] = bool(p.get("bio") or p.get("gender") is not None or p.get("avatar_url"))
+            return p
 
     profile = db.profiles.get(user_id)
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")
+    profile.setdefault("profile_completed", bool(profile.get("bio") or profile.get("gender") is not None))
     return profile

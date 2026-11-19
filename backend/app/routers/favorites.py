@@ -14,7 +14,7 @@ async def list_favorites(user: dict = Depends(get_current_user)):
     """List current user's favorite tracks."""
     user_id = user["sub"]
 
-    if supabase_service.is_live:
+    if supabase_service.is_live and not user.get("is_guest"):
         admin = supabase_service.get_admin()
         res = admin.table("favorites").select(
             "track_id, tracks(*, artists(id, name), albums(id, title, artwork_url, artwork_thumb_url), track_artwork(original_url, thumb_url))"

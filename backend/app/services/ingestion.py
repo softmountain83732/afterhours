@@ -3,6 +3,8 @@
 import hashlib
 import io
 import os
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple
 
@@ -176,6 +178,38 @@ class IngestionService:
                 if covr and len(covr) > 0:
                     return bytes(covr[0])
 
+        except Exception:
+            pass
+
+        # 4. Fallback: FFmpeg video stream extraction (for audio files with attached pictures)
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_img:
+                tmp_img_path = Path(tmp_img.name)
+            try:
+                cmd = [
+                    "ffmpeg", "-y", "-i", str(file_path),
+                    "-an", "-vcodec", "copy",
+                    str(tmp_img_path)
+                ]
+                res = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+                if res.returncode == 0 and tmp_img_path.exists() and tmp_img_path.stat().st_size > 0:
+                    img_data = tmp_img_path.read_bytes()
+                    if len(img_data) > 0:
+                        return img_data
+
+                # Alternate extraction with frame decode if copy failed
+                cmd_decode = [
+                    "ffmpeg", "-y", "-i", str(file_path),
+                    "-an", "-vframes", "1", "-f", "image2",
+                    str(tmp_img_path)
+                ]
+                res2 = subprocess.run(cmd_decode, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+                if res2.returncode == 0 and tmp_img_path.exists() and tmp_img_path.stat().st_size > 0:
+                    img_data = tmp_img_path.read_bytes()
+                    if len(img_data) > 0:
+                        return img_data
+            finally:
+                tmp_img_path.unlink(missing_ok=True)
         except Exception:
             pass
 

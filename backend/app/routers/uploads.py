@@ -132,8 +132,8 @@ async def upload_audio_file(
         # 4. Extract embedded artwork and optimize
         artwork_bytes = IngestionService.extract_artwork(temp_path)
         img_hash = None
-        artwork_url = "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=800&q=80"
-        artwork_thumb_url = "https://images.unsplash.com/photo-1514525253161-7a46d19cd819?w=300&q=80"
+        artwork_url = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&q=80"
+        artwork_thumb_url = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=300&q=80"
 
         if artwork_bytes:
             try:
@@ -152,6 +152,25 @@ async def upload_audio_file(
 
                 artwork_url = f"/api/static/artwork/{img_hash}_full.webp"
                 artwork_thumb_url = f"/api/static/artwork/{img_hash}_thumb.webp"
+
+                if supabase_service.is_live:
+                    admin = supabase_service.get_admin()
+                    if admin:
+                        try:
+                            admin.storage.from_("artwork").upload(
+                                path=f"{img_hash}_full.webp",
+                                file=full_webp,
+                                file_options={"content-type": "image/webp", "upsert": "true"}
+                            )
+                            admin.storage.from_("artwork").upload(
+                                path=f"{img_hash}_thumb.webp",
+                                file=thumb_webp,
+                                file_options={"content-type": "image/webp", "upsert": "true"}
+                            )
+                            artwork_url = admin.storage.from_("artwork").get_public_url(f"{img_hash}_full.webp")
+                            artwork_thumb_url = admin.storage.from_("artwork").get_public_url(f"{img_hash}_thumb.webp")
+                        except Exception:
+                            pass
             except Exception:
                 pass
 
