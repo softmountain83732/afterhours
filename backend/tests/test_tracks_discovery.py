@@ -215,3 +215,168 @@ def test_tracks_dev_offline_serves_mock_store():
     finally:
         settings.ENVIRONMENT = orig_env
         supabase_service._is_live = orig_is_live
+
+
+def test_supabase_key_classification_and_masking():
+    """Verify that key classification correctly identifies key types and safely masks secret material."""
+    from app.services.supabase_client import classify_key_format, get_key_source
+
+    # Empty
+    assert classify_key_format(None) == {"type": "empty", "prefix": "(empty)", "length": 0}
+    assert classify_key_format("") == {"type": "empty", "prefix": "(empty)", "length": 0}
+
+    # Placeholder
+    ph = classify_key_format("placeholder-anon-key")
+    assert ph["type"] == "placeholder"
+    assert ph["prefix"] == "placeholder****"
+    assert ph["length"] == len("placeholder-anon-key")
+
+    # Modern publishable key (sb_publishable_...)
+    pub = classify_key_format("sb_publishable_example_token_12345")
+    assert pub["type"] == "sb_publishable"
+    assert pub["prefix"] == "sb_publishable_****"
+    assert pub["length"] == len("sb_publishable_example_token_12345")
+    assert "example_token" not in pub["prefix"]
+
+    # Modern secret key (sb_secret_...)
+    sec = classify_key_format("sb_secret_example_token_67890")
+    assert sec["type"] == "sb_secret"
+    assert sec["prefix"] == "sb_secret_****"
+    assert sec["length"] == len("sb_secret_example_token_67890")
+    assert "example_token" not in sec["prefix"]
+
+    # Legacy JWT key
+    jwt = classify_key_format("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.signature")
+    assert jwt["type"] == "jwt"
+    assert jwt["prefix"] == "ey...****"
+
+    # Other unrecognized format
+    oth = classify_key_format("custom-secret-key-1234")
+    assert oth["type"] == "other"
+    assert oth["prefix"] == "cust****"
+
+    # Source detection
+    with patch.dict(os.environ, {"SUPABASE_ANON_KEY": "val-1", "NEXT_PUBLIC_SUPABASE_ANON_KEY": "val-2"}):
+        assert get_key_source("SUPABASE_ANON_KEY", ["NEXT_PUBLIC_SUPABASE_ANON_KEY"], "val-1") == "SUPABASE_ANON_KEY (direct)"
+        assert get_key_source("SUPABASE_ANON_KEY", ["NEXT_PUBLIC_SUPABASE_ANON_KEY"], "val-2") == "NEXT_PUBLIC_SUPABASE_ANON_KEY (alias)"
+        assert get_key_source("SUPABASE_ANON_KEY", ["NEXT_PUBLIC_SUPABASE_ANON_KEY"], "placeholder-key") == "default/placeholder"
+
+
+def test_reproduce_supabase_2_11_0_jwt_regex_failure():
+    r"""
+    Reproduce the exact root cause of 'SupabaseException: Invalid API key':
+    supabase-py <= 2.11.0 strictly required a JWT matching regex:
+    ^[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*$
+    Modern sb_publishable_* and sb_secret_* keys do not contain dots and fail this check.
+    """
+    import re
+
+    legacy_pattern = r"^[A-Za-z0-9-_=]+\.[A-Za-z0-9-_=]+\.?[A-Za-z0-9-_.+/=]*$"
+
+    # Legacy JWT keys pass
+    legacy_jwt = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJyb2xlIjoic2VydmljZV9yb2xlIn0.signature"
+    assert bool(re.match(legacy_pattern, legacy_jwt)) is True
+
+    # Modern publishable key fails legacy regex
+    modern_pub = "sb_publishable_abcdef1234567890"
+    assert re.match(legacy_pattern, modern_pub) is None
+
+    # Modern secret key fails legacy regex
+    modern_sec = "sb_secret_abcdef1234567890"
+    assert re.match(legacy_pattern, modern_sec) is None
+
+
+def test_supabase_service_initialization_with_modern_keys(caplog):
+    """
+    Verify that modern Supabase keys (sb_publishable_* and sb_secret_*) initialize
+    SupabaseService successfully without 'SupabaseException: Invalid API key',
+    sets is_live=True, and logs safe diagnostics without leaking credentials.
+    """
+    import logging
+
+    test_env = {
+        "SUPABASE_URL": "https://test-prod-project.supabase.co",
+        "SUPABASE_ANON_KEY": "sb_publishable_live_anon_test_secret_value_123",
+        "SUPABASE_SERVICE_ROLE_KEY": "sb_secret_live_service_test_secret_value_456",
+        "ENVIRONMENT": "production",
+    }
+
+    with patch.dict(os.environ, test_env, clear=False):
+        settings = Settings()
+        svc = SupabaseService.__new__(SupabaseService)
+        svc.settings = settings
+        svc.client = None
+        svc.admin_client = None
+        svc._is_live = False
+        svc.offline_reason = "Uninitialized"
+        svc.diagnostics = {}
+
+        with caplog.at_level(logging.INFO):
+            svc.initialize()
+
+        assert svc.is_live is True
+        assert svc.offline_reason == "Connected"
+        assert svc.client is not None
+        assert svc.admin_client is not None
+
+        # Verify diagnostics structure
+        diag = svc.diagnostics
+        assert diag["host"] == "test-prod-project.supabase.co"
+        assert diag["anon"]["type"] == "sb_publishable"
+        assert diag["anon"]["prefix"] == "sb_publishable_****"
+        assert diag["anon"]["length"] == len("sb_publishable_live_anon_test_secret_value_123")
+        assert diag["service_role"]["type"] == "sb_secret"
+        assert diag["service_role"]["prefix"] == "sb_secret_****"
+        assert diag["service_role"]["length"] == len("sb_secret_live_service_test_secret_value_456")
+
+        # Verify safe diagnostics in captured logs
+        log_text = caplog.text
+        assert "Supabase config diagnostics" in log_text
+        assert "type=sb_publishable" in log_text
+        assert "type=sb_secret" in log_text
+        assert "sb_publishable_****" in log_text
+        assert "sb_secret_****" in log_text
+
+        # Ensure NO raw secret material was ever logged
+        assert "live_anon_test_secret_value_123" not in log_text
+        assert "live_service_test_secret_value_456" not in log_text
+
+
+def test_supabase_compatibility_shim_intercepts_legacy_jwt_check():
+    """Verify that _apply_supabase_compatibility_shim patches legacy regex to allow modern keys."""
+    from app.services.supabase_client import _apply_supabase_compatibility_shim
+    import types
+    import re
+
+    # Create mock legacy module where MockLegacySyncClient lives in the module namespace
+    mock_mod = types.ModuleType("mock_sync_client_mod")
+    mock_mod.re = re
+
+    legacy_code = '''
+class MockLegacySyncClient:
+    _legacy_jwt_check = True
+
+    def __init__(self, supabase_url: str, supabase_key: str):
+        # Check if the key is a valid JWT
+        if not re.match(r"^[A-Za-z0-9-_=]+\\.[A-Za-z0-9-_=]+\\.?[A-Za-z0-9-_.+/=]*$", supabase_key):
+            raise ValueError("SupabaseException: Invalid API key")
+        self.key = supabase_key
+'''
+    exec(legacy_code, mock_mod.__dict__)
+    mock_mod.SyncClient = mock_mod.MockLegacySyncClient
+
+    # Test without shim: modern key raises ValueError
+    with pytest.raises(ValueError, match="Invalid API key"):
+        mock_mod.SyncClient("https://test.supabase.co", "sb_publishable_test_token_123")
+
+    # Apply shim passing the mock module directly
+    _apply_supabase_compatibility_shim(sync_client_mod=mock_mod)
+
+    # With shim applied, modern keys are accepted without error
+    inst = mock_mod.SyncClient("https://test.supabase.co", "sb_publishable_test_token_123")
+    assert inst.key == "sb_publishable_test_token_123"
+
+    inst2 = mock_mod.SyncClient("https://test.supabase.co", "sb_secret_test_token_456")
+    assert inst2.key == "sb_secret_test_token_456"
+
+
