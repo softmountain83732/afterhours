@@ -104,10 +104,13 @@ class AudioService:
     async def transcode_to_aac(
         input_path: Path,
         output_path: Path,
-        bitrate: str = "256k"
+        bitrate: str = "256k",
+        source_codec: Optional[str] = None
     ) -> bool:
         """
-        Transcode input audio file (e.g. FLAC, WAV) to AAC M4A using FFmpeg with faststart.
+        Transcode or remux input audio file to AAC M4A using FFmpeg with faststart.
+        If source is already AAC/M4A, attempts fast remux (-c:a copy -movflags +faststart)
+        which completes in ~50ms without CPU-intensive re-encoding.
         Validates output audio before committing.
         Returns True on success, False on failure.
         """
@@ -126,7 +129,50 @@ class AudioService:
         import uuid
         temp_output = output_path.with_name(f"{output_path.stem}.tmp_{uuid.uuid4().hex[:8]}.m4a")
 
-        # ffmpeg -y -i input -map 0:a:0 -c:a aac -b:a 256k -movflags +faststart -vn temp_output
+        is_aac_source = False
+        clean_codec = (source_codec or input_path.suffix.replace(".", "")).lower().strip()
+        if clean_codec in ("aac", "m4a", "mp4"):
+            is_aac_source = True
+
+        # 1. Fast remux attempt if source is already AAC
+        if is_aac_source:
+            remux_cmd = [
+                "ffmpeg",
+                "-y",
+                "-i", str(input_path),
+                "-map", "0:a:0",
+                "-c:a", "copy",
+                "-movflags", "+faststart",
+                "-vn",
+                str(temp_output)
+            ]
+            try:
+                remux_res = await asyncio.to_thread(
+                    subprocess.run,
+                    remux_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    timeout=30
+                )
+                if (
+                    remux_res.returncode == 0
+                    and temp_output.exists()
+                    and AudioService.validate_audio_file(temp_output)
+                ):
+                    temp_output.replace(output_path)
+                    logger.info(f"Fast remux completed for {input_path.name} -> {output_path.name} in ~50ms")
+                    return True
+                else:
+                    logger.info(f"Fast remux fell through for {input_path.name}, falling back to AAC transcode")
+                    if temp_output.exists():
+                        temp_output.unlink(missing_ok=True)
+            except Exception as remux_err:
+                logger.debug(f"Fast remux attempt exception: {remux_err}")
+                if temp_output.exists():
+                    temp_output.unlink(missing_ok=True)
+
+        # 2. Standard AAC transcode
         cmd = [
             "ffmpeg",
             "-y",

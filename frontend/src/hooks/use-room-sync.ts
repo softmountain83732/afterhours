@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { Room, Track, QueueItem } from "@/lib/types";
 import { api } from "@/lib/api";
 import { usePlayer } from "@/contexts/player-context";
+import { useAuth } from "@/contexts/auth-context";
 import { supabase } from "@/lib/supabase";
 
 export interface RoomSyncConfig {
@@ -24,18 +25,19 @@ const DEFAULT_CONFIG: Required<RoomSyncConfig> = {
   defaultLeadTimeMs: 800,
   minLeadTimeMs: 500,
   maxLeadTimeMs: 1500,
-  driftThresholdInSyncMs: 80,
-  driftThresholdMildMs: 500,
-  driftThresholdSevereMs: 1500,
+  driftThresholdInSyncMs: 150,
+  driftThresholdMildMs: 600,
+  driftThresholdSevereMs: 2000,
   rateMildSlow: 0.98,
   rateMildFast: 1.02,
   rateAggressiveSlow: 0.95,
   rateAggressiveFast: 1.05,
-  rateCooldownMs: 3000,
+  rateCooldownMs: 4000,
 };
 
 export function useRoomSync(roomId: string, customConfig?: RoomSyncConfig) {
   const config = { ...DEFAULT_CONFIG, ...customConfig };
+  const { user } = useAuth();
   const {
     currentTrack,
     playTrack,
@@ -45,6 +47,7 @@ export function useRoomSync(roomId: string, customConfig?: RoomSyncConfig) {
     setPlaybackRate,
     playbackRate,
     getAudioElement,
+    isBuffering,
   } = usePlayer();
 
   const [room, setRoom] = useState<Room | null>(null);
@@ -167,6 +170,10 @@ export function useRoomSync(roomId: string, customConfig?: RoomSyncConfig) {
         playTrack(targetTrack);
       }
 
+      const isHost = Boolean(user?.id && targetRoom.host_id === user.id);
+      const isSolo = (targetRoom.participant_count ?? targetRoom.listener_count ?? 1) <= 1;
+      const isSoloHost = isHost && isSolo;
+
       if (!targetRoom.is_playing) {
         pause();
         const staticSeconds = targetRoom.playback_position_ms / 1000;
@@ -176,6 +183,23 @@ export function useRoomSync(roomId: string, customConfig?: RoomSyncConfig) {
         if (playbackRateRef.current !== 1.0) {
           setPlaybackRate(1.0);
           playbackRateRef.current = 1.0;
+        }
+        setSyncStatus("synced");
+        return;
+      }
+
+      // Solo host is authoritative with immediate 0ms playback and no self-drift interference
+      if (isSoloHost) {
+        if (scheduledTimerRef.current) {
+          clearTimeout(scheduledTimerRef.current);
+          scheduledTimerRef.current = null;
+        }
+        if (playbackRateRef.current !== 1.0) {
+          setPlaybackRate(1.0);
+          playbackRateRef.current = 1.0;
+        }
+        if (audio.paused) {
+          resume();
         }
         setSyncStatus("synced");
         return;
@@ -198,6 +222,12 @@ export function useRoomSync(roomId: string, customConfig?: RoomSyncConfig) {
           setSyncStatus("synced");
         }, delayMs);
       } else {
+        // If this user is host and already playing current track, do not disrupt host audio on listener joins
+        if (isHost && !audio.paused && currentTrack?.id === targetTrack.id) {
+          setSyncStatus("synced");
+          return;
+        }
+
         // Ongoing playback - calculate live elapsed expected position
         let elapsedMs = 0;
         if (targetRoom.server_timestamp) {
@@ -218,14 +248,37 @@ export function useRoomSync(roomId: string, customConfig?: RoomSyncConfig) {
         resume();
       }
     },
-    [currentTrack, getAudioElement, pause, playTrack, resume, safeSeek, setPlaybackRate, config]
+    [currentTrack, getAudioElement, pause, playTrack, resume, safeSeek, setPlaybackRate, config, user]
   );
 
   // ─── 4. FOUR-TIER DRIFT CORRECTION ENGINE (CB-02) ─────────────────────────
   const checkDrift = useCallback(() => {
     const audio = getAudioElement();
     const activeRoom = roomRef.current;
-    if (!audio || !activeRoom || !activeRoom.is_playing || needsAudioUnlock) return;
+    if (
+      !audio ||
+      !activeRoom ||
+      !activeRoom.is_playing ||
+      needsAudioUnlock ||
+      isBuffering ||
+      audio.seeking ||
+      audio.readyState < 2
+    ) {
+      return;
+    }
+
+    const isHost = Boolean(user?.id && activeRoom.host_id === user.id);
+    const isSolo = (activeRoom.participant_count ?? activeRoom.listener_count ?? 1) <= 1;
+
+    // Solo host never self-drift corrects
+    if (isHost && isSolo) {
+      if (playbackRateRef.current !== 1.0) {
+        setPlaybackRate(1.0);
+        playbackRateRef.current = 1.0;
+      }
+      setSyncStatus("synced");
+      return;
+    }
 
     const nowServerMs = Date.now() + clockOffsetRef.current;
     let elapsedMs = 0;
@@ -244,7 +297,7 @@ export function useRoomSync(roomId: string, customConfig?: RoomSyncConfig) {
     const isCooldownActive = now - lastRateChangeRef.current < config.rateCooldownMs;
     const currentRate = playbackRateRef.current;
 
-    // Tier 1: In Sync (< 80ms)
+    // Tier 1: In Sync (< 150ms deadband)
     if (absDeltaMs < config.driftThresholdInSyncMs) {
       if (currentRate !== 1.0) {
         setPlaybackRate(1.0);
@@ -255,7 +308,7 @@ export function useRoomSync(roomId: string, customConfig?: RoomSyncConfig) {
       return;
     }
 
-    // Tier 4: Severe Desync (>= 1500ms) -> Hard Seek
+    // Tier 4: Severe Desync (>= 2000ms) -> Hard Seek
     if (absDeltaMs >= config.driftThresholdSevereMs) {
       safeSeek(expectedSeconds);
       if (currentRate !== 1.0) {
@@ -270,7 +323,7 @@ export function useRoomSync(roomId: string, customConfig?: RoomSyncConfig) {
     // Cooldown guard to avoid rate oscillation
     if (isCooldownActive) return;
 
-    // Tier 2: Mild Drift (80ms - 500ms) -> Rate [0.98x, 1.02x]
+    // Tier 2: Mild Drift (150ms - 600ms) -> Rate [0.98x, 1.02x]
     if (absDeltaMs < config.driftThresholdMildMs) {
       const targetRate = deltaMs < 0 ? config.rateMildFast : config.rateMildSlow;
       if (currentRate !== targetRate) {
@@ -282,7 +335,7 @@ export function useRoomSync(roomId: string, customConfig?: RoomSyncConfig) {
       return;
     }
 
-    // Tier 3: Moderate Drift (500ms - 1500ms) -> Rate [0.95x, 1.05x]
+    // Tier 3: Moderate Drift (600ms - 2000ms) -> Rate [0.95x, 1.05x]
     if (absDeltaMs < config.driftThresholdSevereMs) {
       const targetRate = deltaMs < 0 ? config.rateAggressiveFast : config.rateAggressiveSlow;
       if (currentRate !== targetRate) {
@@ -293,7 +346,7 @@ export function useRoomSync(roomId: string, customConfig?: RoomSyncConfig) {
       }
       return;
     }
-  }, [getAudioElement, needsAudioUnlock, safeSeek, setPlaybackRate, config]);
+  }, [getAudioElement, needsAudioUnlock, isBuffering, safeSeek, setPlaybackRate, config, user]);
 
   // Keep checkDriftRef pointing to the latest callback without triggering interval recreation
   useEffect(() => {
@@ -530,8 +583,17 @@ export function useRoomSync(roomId: string, customConfig?: RoomSyncConfig) {
         roomRef.current = optimistic;
       }
 
+      const isHost = Boolean(user?.id && activeRoom.host_id === user.id);
+      const isSolo = (activeRoom.participant_count ?? activeRoom.listener_count ?? 1) <= 1;
+      const isSoloHost = isHost && isSolo;
+
+      const finalPayload = { ...payload };
+      if (isSoloHost && finalPayload.scheduled_delay_ms === undefined) {
+        finalPayload.scheduled_delay_ms = 0;
+      }
+
       try {
-        const res = await api.rooms.dispatchCommand(roomId, action, payload, expectedRev);
+        const res = await api.rooms.dispatchCommand(roomId, action, finalPayload, expectedRev);
         if (res.success && res.room) {
           setRoom(res.room);
           roomRef.current = res.room;
@@ -560,7 +622,7 @@ export function useRoomSync(roomId: string, customConfig?: RoomSyncConfig) {
         throw err;
       }
     },
-    [room, roomId, pause, resume, safeSeek, applyPlaybackState, fetchNormalizedQueue, fetchRoomSnapshot]
+    [room, roomId, pause, resume, safeSeek, applyPlaybackState, fetchNormalizedQueue, fetchRoomSnapshot, user]
   );
 
   return {

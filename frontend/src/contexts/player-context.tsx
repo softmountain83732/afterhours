@@ -8,6 +8,8 @@ import { useTelegram } from "./telegram-context";
 interface PlayerContextType {
   currentTrack: Track | null;
   isPlaying: boolean;
+  isBuffering: boolean;
+  playbackError: string | null;
   currentTime: number;
   duration: number;
   buffered: number;
@@ -25,6 +27,7 @@ interface PlayerContextType {
   pause: () => void;
   resume: () => void;
   seek: (timeSeconds: number) => void;
+  retryPlayback: () => void;
   next: () => void;
   previous: () => void;
   addToQueue: (track: Track) => void;
@@ -44,6 +47,8 @@ interface PlayerContextType {
 const PlayerContext = createContext<PlayerContextType>({
   currentTrack: null,
   isPlaying: false,
+  isBuffering: false,
+  playbackError: null,
   currentTime: 0,
   duration: 0,
   buffered: 0,
@@ -61,6 +66,7 @@ const PlayerContext = createContext<PlayerContextType>({
   pause: () => {},
   resume: () => {},
   seek: () => {},
+  retryPlayback: () => {},
   next: () => {},
   previous: () => {},
   addToQueue: () => {},
@@ -85,6 +91,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   // React state
   const [currentTrack, setCurrentTrack] = useState<Track | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [isBuffering, setIsBuffering] = useState(false);
+  const [playbackError, setPlaybackError] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [buffered, setBuffered] = useState(0);
@@ -104,7 +112,14 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const repeatModeRef = useRef<"off" | "all" | "one">("off");
   const qualityRef = useRef<AudioQuality>("standard");
   const isPlayingRef = useRef<boolean>(false);
+  const isBufferingRef = useRef<boolean>(false);
   const isTransitioningRef = useRef<boolean>(false);
+  const shouldPlayRef = useRef<boolean>(false);
+  const isPlayPendingRef = useRef<boolean>(false);
+  const pendingSeekRef = useRef<number | null>(null);
+  const isSeekingRef = useRef<boolean>(false);
+  const retryCountRef = useRef<number>(0);
+  const playbackEpochRef = useRef<number>(0);
 
   const { haptic } = useTelegram();
 
@@ -133,8 +148,12 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     isPlayingRef.current = isPlaying;
   }, [isPlaying]);
 
+  useEffect(() => {
+    isBufferingRef.current = isBuffering;
+  }, [isBuffering]);
+
   const setPlaybackRate = (rate: number) => {
-    if (audioRef.current) {
+    if (audioRef.current && Math.abs(audioRef.current.playbackRate - rate) > 0.001) {
       audioRef.current.playbackRate = rate;
       setPlaybackRateState(rate);
     }
@@ -142,14 +161,103 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const getAudioElement = () => audioRef.current;
 
+  // Safe playback execution with concurrency locking & autoplay policy handling
+  const safePlay = useCallback(async () => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    shouldPlayRef.current = true;
+
+    if (isPlayPendingRef.current) return;
+
+    // If media is not yet ready to play, wait for canplay
+    if (audio.readyState < 2) {
+      setIsBuffering(true);
+      isBufferingRef.current = true;
+      return;
+    }
+
+    isPlayPendingRef.current = true;
+    try {
+      await audio.play();
+      setPlaybackError(null);
+    } catch (err: any) {
+      if (err.name === "NotAllowedError") {
+        setPlaybackError("Autoplay blocked. Tap to resume playback.");
+        setIsPlaying(false);
+        isPlayingRef.current = false;
+        shouldPlayRef.current = false;
+      } else if (err.name === "AbortError") {
+        // Play was superseded by a new track or pause; safe to ignore
+      } else {
+        console.warn("audio.play() error:", err);
+      }
+    } finally {
+      isPlayPendingRef.current = false;
+    }
+  }, []);
+
+  const pause = useCallback(() => {
+    shouldPlayRef.current = false;
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.pause();
+    setIsPlaying(false);
+    isPlayingRef.current = false;
+    setIsBuffering(false);
+    isBufferingRef.current = false;
+  }, []);
+
+  const resume = useCallback(() => {
+    shouldPlayRef.current = true;
+    safePlay();
+  }, [safePlay]);
+
+  const seek = useCallback((timeSeconds: number) => {
+    haptic("soft");
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    if (audio.readyState >= 1) {
+      try {
+        audio.currentTime = timeSeconds;
+        setCurrentTime(timeSeconds);
+      } catch (err) {
+        console.warn("Seek error:", err);
+      }
+    } else {
+      // Defer seek until loadedmetadata fires
+      pendingSeekRef.current = timeSeconds;
+    }
+  }, [haptic]);
+
+  const retryPlayback = useCallback(() => {
+    setPlaybackError(null);
+    retryCountRef.current = 0;
+    const audio = audioRef.current;
+    if (audio && currentTrackRef.current) {
+      audio.load();
+      shouldPlayRef.current = true;
+      safePlay();
+    }
+  }, [safePlay]);
+
   // Internal track playback executor
   const playTrackInternal = useCallback((track: Track, newQueue?: Track[]) => {
-    if (!audioRef.current) return;
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    playbackEpochRef.current += 1;
+    pendingSeekRef.current = null;
+    shouldPlayRef.current = true;
+    setIsBuffering(true);
+    isBufferingRef.current = true;
+    setPlaybackError(null);
+    retryCountRef.current = 0;
 
     // Record previous track history if played for at least 5 seconds
     const prev = currentTrackRef.current;
-    if (prev && audioRef.current.currentTime > 5) {
-      api.history.record(prev.id, Math.round(audioRef.current.currentTime * 1000)).catch(() => {});
+    if (prev && audio.currentTime > 5) {
+      api.history.record(prev.id, Math.round(audio.currentTime * 1000)).catch(() => {});
     }
 
     setCurrentTrack(track);
@@ -166,16 +274,16 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
 
     const streamUrl = api.streaming.getUrl(track.id, qualityRef.current);
-    audioRef.current.src = streamUrl;
-    audioRef.current.currentTime = 0;
+    audio.src = streamUrl;
+    audio.load();
     setCurrentTime(0);
     setDuration(track.duration_ms ? track.duration_ms / 1000 : 0);
 
-    audioRef.current.play().catch(() => {
-      setIsPlaying(false);
-      isPlayingRef.current = false;
-    });
-  }, []);
+    // If media is already ready (e.g. cached/instant)
+    if (audio.readyState >= 2) {
+      safePlay();
+    }
+  }, [safePlay]);
 
   const playTrack = useCallback((track: Track, newQueue?: Track[]) => {
     haptic("light");
@@ -308,9 +416,62 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       }
     };
 
+    const onLoadedMetadata = () => {
+      if (audio.duration && !isNaN(audio.duration)) {
+        setDuration(audio.duration);
+      }
+      if (pendingSeekRef.current !== null) {
+        try {
+          audio.currentTime = pendingSeekRef.current;
+          setCurrentTime(pendingSeekRef.current);
+        } catch {}
+        pendingSeekRef.current = null;
+      }
+    };
+
+    const onCanPlay = () => {
+      setIsBuffering(false);
+      isBufferingRef.current = false;
+      if (shouldPlayRef.current && !isPlayingRef.current) {
+        safePlay();
+      }
+    };
+
+    const onWaiting = () => {
+      setIsBuffering(true);
+      isBufferingRef.current = true;
+    };
+
+    const onStalled = () => {
+      setIsBuffering(true);
+      isBufferingRef.current = true;
+    };
+
+    const onSeeking = () => {
+      isSeekingRef.current = true;
+      setIsBuffering(true);
+      isBufferingRef.current = true;
+    };
+
+    const onSeeked = () => {
+      isSeekingRef.current = false;
+      setIsBuffering(false);
+      isBufferingRef.current = false;
+      setCurrentTime(audio.currentTime);
+    };
+
     const onPlay = () => {
       setIsPlaying(true);
       isPlayingRef.current = true;
+    };
+
+    const onPlaying = () => {
+      setIsBuffering(false);
+      isBufferingRef.current = false;
+      setIsPlaying(true);
+      isPlayingRef.current = true;
+      setPlaybackError(null);
+      retryCountRef.current = 0;
     };
 
     const onPause = () => {
@@ -322,21 +483,57 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       handleTrackEnd();
     };
 
+    const onError = () => {
+      const err = audio.error;
+      console.warn("Audio element error:", err);
+      if (retryCountRef.current < 2 && currentTrackRef.current) {
+        retryCountRef.current += 1;
+        setTimeout(() => {
+          if (shouldPlayRef.current) {
+            audio.load();
+            safePlay();
+          }
+        }, 1000);
+      } else {
+        setPlaybackError("Audio failed to load. Tap to retry.");
+        setIsBuffering(false);
+        isBufferingRef.current = false;
+        setIsPlaying(false);
+        isPlayingRef.current = false;
+      }
+    };
+
     audio.addEventListener("timeupdate", onTimeUpdate);
     audio.addEventListener("durationchange", onDurationChange);
+    audio.addEventListener("loadedmetadata", onLoadedMetadata);
+    audio.addEventListener("canplay", onCanPlay);
+    audio.addEventListener("waiting", onWaiting);
+    audio.addEventListener("stalled", onStalled);
+    audio.addEventListener("seeking", onSeeking);
+    audio.addEventListener("seeked", onSeeked);
     audio.addEventListener("play", onPlay);
+    audio.addEventListener("playing", onPlaying);
     audio.addEventListener("pause", onPause);
     audio.addEventListener("ended", onEnded);
+    audio.addEventListener("error", onError);
 
     return () => {
       audio.pause();
       audio.removeEventListener("timeupdate", onTimeUpdate);
       audio.removeEventListener("durationchange", onDurationChange);
+      audio.removeEventListener("loadedmetadata", onLoadedMetadata);
+      audio.removeEventListener("canplay", onCanPlay);
+      audio.removeEventListener("waiting", onWaiting);
+      audio.removeEventListener("stalled", onStalled);
+      audio.removeEventListener("seeking", onSeeking);
+      audio.removeEventListener("seeked", onSeeked);
       audio.removeEventListener("play", onPlay);
+      audio.removeEventListener("playing", onPlaying);
       audio.removeEventListener("pause", onPause);
       audio.removeEventListener("ended", onEnded);
+      audio.removeEventListener("error", onError);
     };
-  }, [handleTrackEnd]);
+  }, [handleTrackEnd, safePlay]);
 
   // Media Session API for Lock Screen & Background Playback controls
   useEffect(() => {
@@ -371,30 +568,15 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     } catch {}
   }, [currentTrack, isPlaying, next, previous]);
 
-  const togglePlay = () => {
+  const togglePlay = useCallback(() => {
     haptic("light");
-    if (!audioRef.current || !currentTrack) return;
+    if (!audioRef.current || !currentTrackRef.current) return;
     if (isPlaying) {
-      audioRef.current.pause();
+      pause();
     } else {
-      audioRef.current.play().catch(() => {});
+      resume();
     }
-  };
-
-  const pause = () => {
-    audioRef.current?.pause();
-  };
-
-  const resume = () => {
-    audioRef.current?.play().catch(() => {});
-  };
-
-  const seek = (timeSeconds: number) => {
-    haptic("soft");
-    if (!audioRef.current) return;
-    audioRef.current.currentTime = timeSeconds;
-    setCurrentTime(timeSeconds);
-  };
+  }, [haptic, isPlaying, pause, resume]);
 
   // Queue Operations
   const addToQueue = (track: Track) => {
@@ -564,6 +746,8 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       value={{
         currentTrack,
         isPlaying,
+        isBuffering,
+        playbackError,
         currentTime,
         duration,
         buffered,
@@ -581,6 +765,7 @@ export const PlayerProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         pause,
         resume,
         seek,
+        retryPlayback,
         next,
         previous,
         addToQueue,

@@ -108,6 +108,7 @@ export interface Room {
   is_active: boolean;
   invite_token?: string;
   listener_count: number;
+  participant_count?: number;
   max_members: number;
   current_track_id?: string | null;
   current_track?: Track | null;

@@ -291,6 +291,10 @@ def execute_room_command(
             "updated_at": now_dt.isoformat(),
         }
 
+        # Determine if immediate 0ms playback requested
+        req_delay = payload.get("scheduled_delay_ms")
+        is_immediate = (req_delay == 0)
+
         # Handle specific actions
         if action_upper in ("PLAY", "CHANGE_TRACK"):
             track_id = payload.get("track_id")
@@ -303,9 +307,12 @@ def execute_room_command(
                 if not t_check.data:
                     raise HTTPException(status_code=404, detail="Track not found")
 
-            delay = payload.get("scheduled_delay_ms", DEFAULT_SCHEDULED_DELAY_MS)
-            delay = max(MIN_SCHEDULED_DELAY_MS, min(MAX_SCHEDULED_DELAY_MS, delay))
-            scheduled_start_ms = now_ms + delay
+            if is_immediate:
+                scheduled_start_ms = None
+            else:
+                delay = req_delay if req_delay is not None else DEFAULT_SCHEDULED_DELAY_MS
+                delay = max(MIN_SCHEDULED_DELAY_MS, min(MAX_SCHEDULED_DELAY_MS, delay))
+                scheduled_start_ms = now_ms + delay
 
             pos_ms = 0 if action_upper == "CHANGE_TRACK" else payload.get("position_ms", room.get("playback_position_ms", 0))
             rate = float(payload.get("playback_rate", 1.0))
@@ -328,15 +335,14 @@ def execute_room_command(
 
         elif action_upper == "SEEK":
             pos_ms = payload.get("position_ms", 0)
-            delay = payload.get("scheduled_delay_ms", DEFAULT_SCHEDULED_DELAY_MS)
-            delay = max(MIN_SCHEDULED_DELAY_MS, min(MAX_SCHEDULED_DELAY_MS, delay))
-
             room_updates["playback_position_ms"] = pos_ms
             room_updates["playback_updated_at"] = now_dt.isoformat()
-            if room.get("is_playing"):
-                room_updates["scheduled_start_ms"] = now_ms + delay
-            else:
+            if is_immediate or not room.get("is_playing"):
                 room_updates["scheduled_start_ms"] = None
+            else:
+                delay = req_delay if req_delay is not None else DEFAULT_SCHEDULED_DELAY_MS
+                delay = max(MIN_SCHEDULED_DELAY_MS, min(MAX_SCHEDULED_DELAY_MS, delay))
+                room_updates["scheduled_start_ms"] = now_ms + delay
 
         elif action_upper == "QUEUE_ADD":
             track_id = payload.get("track_id")
@@ -484,8 +490,11 @@ def execute_room_command(
                 room_updates["queue"] = [i["track_id"] for i in pending_items]
 
         elif action_upper == "NEXT_TRACK":
-            delay = payload.get("scheduled_delay_ms", DEFAULT_SCHEDULED_DELAY_MS)
-            delay = max(MIN_SCHEDULED_DELAY_MS, min(MAX_SCHEDULED_DELAY_MS, delay))
+            if is_immediate:
+                delay = 0
+            else:
+                delay = payload.get("scheduled_delay_ms", DEFAULT_SCHEDULED_DELAY_MS)
+                delay = max(MIN_SCHEDULED_DELAY_MS, min(MAX_SCHEDULED_DELAY_MS, delay))
 
             rpc_handled = False
             try:
@@ -504,7 +513,7 @@ def execute_room_command(
                     if has_next and d.get("current_track_id"):
                         room_updates["current_track_id"] = d.get("current_track_id")
                         room_updates["is_playing"] = True
-                        room_updates["scheduled_start_ms"] = d.get("scheduled_start_ms")
+                        room_updates["scheduled_start_ms"] = None if is_immediate else d.get("scheduled_start_ms")
                         room_updates["playback_position_ms"] = 0
                         room_updates["playback_updated_at"] = now_dt.isoformat()
                     else:
@@ -527,7 +536,7 @@ def execute_room_command(
                     admin.table("room_queue").update({"played_at": now_dt.isoformat()}).eq("id", next_item["id"]).execute()
                     room_updates["current_track_id"] = next_item["track_id"]
                     room_updates["playback_position_ms"] = 0
-                    room_updates["scheduled_start_ms"] = now_ms + delay
+                    room_updates["scheduled_start_ms"] = None if is_immediate else (now_ms + delay)
                     room_updates["is_playing"] = True
                     room_updates["playback_updated_at"] = now_dt.isoformat()
 
@@ -602,6 +611,10 @@ def execute_room_command(
 
     queue_list = db.room_queues.setdefault(room_id, [])
 
+    members_map = db.room_members.get(room_id, {})
+    req_delay = payload.get("scheduled_delay_ms")
+    is_immediate = (req_delay == 0)
+
     if action_upper in ("PLAY", "CHANGE_TRACK"):
         track_id = payload.get("track_id")
         if action_upper == "CHANGE_TRACK" and not track_id:
@@ -611,9 +624,12 @@ def execute_room_command(
         if track_id and track_id not in db.tracks:
             raise HTTPException(status_code=404, detail="Track not found")
 
-        delay = payload.get("scheduled_delay_ms", DEFAULT_SCHEDULED_DELAY_MS)
-        delay = max(MIN_SCHEDULED_DELAY_MS, min(MAX_SCHEDULED_DELAY_MS, delay))
-        scheduled_start_ms = now_ms + delay
+        if is_immediate:
+            scheduled_start_ms = None
+        else:
+            delay = req_delay if req_delay is not None else DEFAULT_SCHEDULED_DELAY_MS
+            delay = max(MIN_SCHEDULED_DELAY_MS, min(MAX_SCHEDULED_DELAY_MS, delay))
+            scheduled_start_ms = now_ms + delay
 
         pos_ms = 0 if action_upper == "CHANGE_TRACK" else payload.get("position_ms", room.get("playback_position_ms", 0))
         rate = float(payload.get("playback_rate", 1.0))
@@ -636,15 +652,14 @@ def execute_room_command(
 
     elif action_upper == "SEEK":
         pos_ms = payload.get("position_ms", 0)
-        delay = payload.get("scheduled_delay_ms", DEFAULT_SCHEDULED_DELAY_MS)
-        delay = max(MIN_SCHEDULED_DELAY_MS, min(MAX_SCHEDULED_DELAY_MS, delay))
-
         room["playback_position_ms"] = pos_ms
         room["playback_updated_at"] = now_iso
-        if room.get("is_playing"):
-            room["scheduled_start_ms"] = now_ms + delay
-        else:
+        if is_immediate or not room.get("is_playing"):
             room["scheduled_start_ms"] = None
+        else:
+            delay = req_delay if req_delay is not None else DEFAULT_SCHEDULED_DELAY_MS
+            delay = max(MIN_SCHEDULED_DELAY_MS, min(MAX_SCHEDULED_DELAY_MS, delay))
+            room["scheduled_start_ms"] = now_ms + delay
 
     elif action_upper == "QUEUE_ADD":
         track_id = payload.get("track_id")
@@ -737,7 +752,7 @@ def execute_room_command(
             room["playback_position_ms"] = 0
             delay = payload.get("scheduled_delay_ms", DEFAULT_SCHEDULED_DELAY_MS)
             delay = max(MIN_SCHEDULED_DELAY_MS, min(MAX_SCHEDULED_DELAY_MS, delay))
-            room["scheduled_start_ms"] = now_ms + delay
+            room["scheduled_start_ms"] = None if is_immediate else (now_ms + delay)
             room["is_playing"] = True
             room["playback_updated_at"] = now_iso
 

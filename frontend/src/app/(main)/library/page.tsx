@@ -15,6 +15,7 @@ import { useTelegram } from "@/contexts/telegram-context";
 // Process-local SWR memory cache for instant tab transitions
 let cachedTracks: Track[] = [];
 let cachedFavorites: Track[] = [];
+const PAGE_SIZE = 20;
 
 export default function LibraryPage() {
   const [query, setQuery] = useState("");
@@ -22,6 +23,9 @@ export default function LibraryPage() {
   const [favorites, setFavorites] = useState<Track[]>(() => cachedFavorites);
   const [activeTab, setActiveTab] = useState<"all" | "favorites">("all");
   const [isLoading, setIsLoading] = useState(() => cachedTracks.length === 0);
+  const [hasMore, setHasMore] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [totalTracks, setTotalTracks] = useState(0);
   const [activeFilter, setActiveFilter] = useState<{ type: "artist" | "album"; value: string } | null>(null);
 
   // Single context menu coordinator for the page
@@ -37,8 +41,10 @@ export default function LibraryPage() {
       if (!searchTerm && cachedTracks.length === 0) {
         setIsLoading(true);
       }
-      const res = await api.tracks.list(searchTerm);
+      const res = await api.tracks.list(searchTerm, PAGE_SIZE, 0);
       setTracks(res.items);
+      setTotalTracks(res.total);
+      setHasMore(res.items.length < res.total);
       if (!searchTerm) {
         cachedTracks = res.items;
       }
@@ -48,6 +54,27 @@ export default function LibraryPage() {
       setIsLoading(false);
     }
   }, []);
+
+  const loadMoreTracks = async () => {
+    if (isLoadingMore || !hasMore) return;
+    setIsLoadingMore(true);
+    haptic("light");
+    try {
+      const nextOffset = tracks.length;
+      const res = await api.tracks.list(query, PAGE_SIZE, nextOffset);
+      const combined = [...tracks, ...res.items];
+      setTracks(combined);
+      setTotalTracks(res.total);
+      setHasMore(combined.length < res.total);
+      if (!query) {
+        cachedTracks = combined;
+      }
+    } catch {
+      // ignore
+    } finally {
+      setIsLoadingMore(false);
+    }
+  };
 
   const loadFavorites = useCallback(async () => {
     try {
@@ -236,15 +263,36 @@ export default function LibraryPage() {
             )}
           </div>
         ) : (
-          displayTracks.map((track, idx) => (
-            <TrackCard
-              key={track.id}
-              track={track}
-              index={idx}
-              onSelect={() => playTrack(track, displayTracks)}
-              onOpenContextMenu={(t) => setContextMenuTrack(t)}
-            />
-          ))
+          <>
+            {displayTracks.map((track, idx) => (
+              <TrackCard
+                key={track.id}
+                track={track}
+                index={idx}
+                onSelect={() => playTrack(track, displayTracks)}
+                onOpenContextMenu={(t) => setContextMenuTrack(t)}
+              />
+            ))}
+
+            {activeTab === "all" && hasMore && (
+              <div className="pt-3 pb-2 flex justify-center">
+                <button
+                  onClick={loadMoreTracks}
+                  disabled={isLoadingMore}
+                  className="px-5 py-2.5 rounded-full bg-surface-light border border-border/60 hover:border-primary/40 text-xs font-semibold text-content-primary hover:bg-surface-hover transition-all flex items-center space-x-2 shadow-sm"
+                >
+                  {isLoadingMore ? (
+                    <>
+                      <div className="w-3.5 h-3.5 border-2 border-primary border-t-transparent rounded-full animate-spin" />
+                      <span>Loading more tracks...</span>
+                    </>
+                  ) : (
+                    <span>Load More ({tracks.length} of {totalTracks})</span>
+                  )}
+                </button>
+              </div>
+            )}
+          </>
         )}
       </div>
 

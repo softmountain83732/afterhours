@@ -447,7 +447,7 @@ def test_uncached_track_download_transcode_cache_commit_flow(tmp_path):
         dest.write_bytes(raw_sample.read_bytes())
         return dest
 
-    async def mock_transcode(inp, out, bitrate):
+    async def mock_transcode(inp, out, bitrate, *args, **kwargs):
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(transcoded_sample.read_bytes())
         return True

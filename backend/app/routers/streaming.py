@@ -121,7 +121,7 @@ async def _download_and_transcode_track(track_id: str, quality_str: str, track: 
     bitrate = AudioService.get_quality_bitrate(quality_str)
     temp_transcode = dest_path.with_name(f"{dest_path.stem}.tmp_tc_{uuid.uuid4().hex[:8]}.m4a")
     try:
-        success = await AudioService.transcode_to_aac(raw_path, temp_transcode, bitrate)
+        success = await AudioService.transcode_to_aac(raw_path, temp_transcode, bitrate, source_codec=raw_codec)
         if not success or not temp_transcode.exists() or not AudioService.validate_audio_file(temp_transcode):
             if temp_transcode.exists():
                 temp_transcode.unlink(missing_ok=True)
@@ -143,9 +143,8 @@ async def _download_and_transcode_track(track_id: str, quality_str: str, track: 
     finally:
         if temp_transcode.exists():
             temp_transcode.unlink(missing_ok=True)
-        # If raw file was not previously cached permanently, clean it up to keep disk space bounded
-        if not raw_was_cached and raw_path.exists():
-            raw_path.unlink(missing_ok=True)
+        # Note: raw_path is retained in the cache directory so subsequent quality options
+        # or player requests do not require re-downloading from Telegram. Bounded LRU cache evicts as needed.
 
 
 @router.get("/{track_id}")

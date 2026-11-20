@@ -139,7 +139,7 @@ export const api = {
   },
 
   tracks: {
-    list: (query?: string, limit = 50, offset = 0) => {
+    list: (query?: string, limit = 20, offset = 0) => {
       const q = query ? `&q=${encodeURIComponent(query)}` : "";
       return request<{ items: Track[]; total: number }>(`/api/tracks?limit=${limit}&offset=${offset}${q}`);
     },

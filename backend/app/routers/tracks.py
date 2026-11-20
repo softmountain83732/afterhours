@@ -80,7 +80,7 @@ def format_track(t: Dict[str, Any], is_favorite: bool = False) -> Dict[str, Any]
 @router.get("")
 async def list_tracks(
     q: Optional[str] = Query(None, description="Search query for title, artist, or album"),
-    limit: int = Query(50, ge=1, le=100),
+    limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     user: Optional[dict] = Depends(get_optional_user)
 ):
@@ -126,16 +126,41 @@ async def list_tracks(
             )
 
             try:
-                query = admin.table("tracks").select(
-                    "*, artists(id, name), albums(id, title, artwork_url, artwork_thumb_url), track_artwork(original_url, thumb_url)"
-                )
-                if user_id:
-                    query = query.or_(f"is_private.eq.false,uploaded_by.eq.{user_id}")
-                else:
-                    query = query.eq("is_private", False)
+                if not q or not q.strip():
+                    # Paginate directly at PostgREST layer for instant initial load (20 tracks)
+                    query = admin.table("tracks").select(
+                        "*, artists(id, name), albums(id, title, artwork_url, artwork_thumb_url), track_artwork(original_url, thumb_url)",
+                        count="exact"
+                    )
+                    if user_id:
+                        query = query.or_(f"is_private.eq.false,uploaded_by.eq.{user_id}")
+                    else:
+                        query = query.eq("is_private", False)
 
-                res = query.order("created_at", desc=True).execute()
-                raw_tracks = res.data or []
+                    ordered = query.order("created_at", desc=True)
+                    if hasattr(ordered, "range"):
+                        res = ordered.range(offset, offset + limit - 1).execute()
+                        if getattr(res, "data", None) is None and hasattr(ordered, "execute"):
+                            res = ordered.execute()
+                    else:
+                        res = ordered.execute()
+
+                    raw_tracks = res.data or []
+                    count_val = getattr(res, "count", None)
+                    total = count_val if isinstance(count_val, int) else len(raw_tracks)
+                    paged_raw = raw_tracks
+                else:
+                    query = admin.table("tracks").select(
+                        "*, artists(id, name), albums(id, title, artwork_url, artwork_thumb_url), track_artwork(original_url, thumb_url)"
+                    )
+                    if user_id:
+                        query = query.or_(f"is_private.eq.false,uploaded_by.eq.{user_id}")
+                    else:
+                        query = query.eq("is_private", False)
+
+                    res = query.order("created_at", desc=True).execute()
+                    raw_tracks = res.data or []
+                    paged_raw = None
                 logger.info("GET /api/tracks: Supabase returned %d raw rows.", len(raw_tracks))
             except Exception as exc:
                 logger.error(
@@ -152,15 +177,18 @@ async def list_tracks(
             user_favs = set()
             if user_id:
                 try:
-                    fav_res = admin.table("favorites").select("track_id").eq("user_id", user_id).execute()
+                    fav_query = admin.table("favorites").select("track_id").eq("user_id", user_id)
+                    if paged_raw is not None and len(paged_raw) > 0:
+                        fav_query = fav_query.in_("track_id", [t["id"] for t in paged_raw])
+                    fav_res = fav_query.execute()
                     user_favs = {row["track_id"] for row in (fav_res.data or [])}
                 except Exception as exc:
                     logger.warning("GET /api/tracks: Failed to load user favorites (%s: %s)", type(exc).__name__, str(exc))
 
-            formatted = [format_track(t, is_favorite=t["id"] in user_favs) for t in raw_tracks]
-
-            # Search filter
-            if q and q.strip():
+            if paged_raw is not None:
+                paged = [format_track(t, is_favorite=t["id"] in user_favs) for t in paged_raw]
+            else:
+                formatted = [format_track(t, is_favorite=t["id"] in user_favs) for t in raw_tracks]
                 term = q.strip().lower()
                 formatted = [
                     t for t in formatted
@@ -168,9 +196,8 @@ async def list_tracks(
                     or term in t["artist_name"].lower()
                     or term in t["album_title"].lower()
                 ]
-
-            total = len(formatted)
-            paged = formatted[offset: offset + limit]
+                total = len(formatted)
+                paged = formatted[offset: offset + limit]
 
             logger.info(
                 "GET /api/tracks: data_source=supabase, returning %d tracks (total=%d, limit=%d, offset=%d)",

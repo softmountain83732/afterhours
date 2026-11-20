@@ -103,8 +103,11 @@ def test_tracks_query_live_supabase_returns_real_records():
     mock_query.eq.return_value = mock_query
     mock_query.or_.return_value = mock_query
     mock_query.order.return_value = mock_query
+    mock_query.range.return_value = mock_query
     mock_res = MagicMock()
     mock_res.data = mock_supabase_records
+    mock_res.count = 1
+    mock_query.execute.return_value = mock_res
     mock_query.order.return_value.execute.return_value = mock_res
     mock_admin.table.return_value = mock_query
 
@@ -159,8 +162,12 @@ def test_tracks_supabase_query_error_does_not_return_demo_tracks():
     mock_query.select.return_value = mock_query
     mock_query.eq.return_value = mock_query
     mock_query.or_.return_value = mock_query
+    mock_query.order.return_value = mock_query
+    mock_query.range.return_value = mock_query
     # Simulate database / PostgREST query failure
-    mock_query.order.return_value.execute.side_effect = RuntimeError("PostgREST connection failed: 500 Internal Error")
+    error_effect = RuntimeError("PostgREST connection failed: 500 Internal Error")
+    mock_query.execute.side_effect = error_effect
+    mock_query.order.return_value.execute.side_effect = error_effect
     mock_admin.table.return_value = mock_query
 
     orig_is_live = supabase_service._is_live
