@@ -21,6 +21,7 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/contexts/auth-context";
 import { usePlayer } from "@/contexts/player-context";
 import { useTelegram } from "@/contexts/telegram-context";
+import { TrackArtwork } from "@/components/ui/track-artwork";
 
 export default function ProfilePage() {
   const { user, isGuest, isAuthenticated, isInitializing, updateProfile, logout } = useAuth();
@@ -276,11 +277,10 @@ export default function ProfilePage() {
                   onClick={() => playTrack(t, uploads)}
                   className="flex items-center space-x-3 overflow-hidden flex-1 cursor-pointer"
                 >
-                  <div className="w-11 h-11 rounded-xl overflow-hidden bg-surface-light border border-border/40 flex-shrink-0">
-                    <img
-                      src={t.artwork_thumb_url || t.artwork_url || "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=200&q=80"}
-                      alt=""
-                      className="w-full h-full object-cover"
+                  <div className="w-11 h-11 rounded-xl overflow-hidden border border-border/40 flex-shrink-0">
+                    <TrackArtwork
+                      src={t.artwork_thumb_url || t.artwork_url}
+                      alt={t.title}
                     />
                   </div>
                   <div className="flex flex-col min-w-0 pr-2">
@@ -327,11 +327,10 @@ export default function ProfilePage() {
                 className="flex items-center justify-between p-2.5 rounded-xl bg-surface/50 border border-border/40 cursor-pointer hover:bg-surface/80"
               >
                 <div className="flex items-center space-x-3 overflow-hidden">
-                  <div className="w-9 h-9 rounded-lg overflow-hidden bg-surface-light flex-shrink-0">
-                    <img
-                      src={item.track.artwork_thumb_url || item.track.artwork_url || "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=100&q=80"}
-                      alt=""
-                      className="w-full h-full object-cover"
+                  <div className="w-9 h-9 rounded-lg overflow-hidden border border-border/40 flex-shrink-0">
+                    <TrackArtwork
+                      src={item.track.artwork_thumb_url || item.track.artwork_url}
+                      alt={item.track.title}
                     />
                   </div>
                   <div className="flex flex-col min-w-0">

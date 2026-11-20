@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse, RedirectResponse
+from fastapi.responses import JSONResponse, FileResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from app.config import get_settings
@@ -117,17 +117,75 @@ app.add_middleware(
     expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
 )
 
-DEFAULT_FALLBACK_ARTWORK_URL = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&q=80"
+AFTERHOURS_DEFAULT_ARTWORK_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="100%" height="100%">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="50%" r="70%">
+      <stop offset="0%" stop-color="#1e1838"/>
+      <stop offset="50%" stop-color="#120e24"/>
+      <stop offset="100%" stop-color="#08070d"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#a855f7" stop-opacity="0.4"/>
+      <stop offset="60%" stop-color="#6366f1" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="discGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2a2347"/>
+      <stop offset="100%" stop-color="#110d1f"/>
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#c084fc"/>
+      <stop offset="50%" stop-color="#818cf8"/>
+      <stop offset="100%" stop-color="#38bdf8"/>
+    </linearGradient>
+  </defs>
+  <rect width="500" height="500" rx="36" fill="url(#bg)"/>
+  <circle cx="250" cy="250" r="220" fill="url(#glow)"/>
+  <circle cx="250" cy="250" r="180" fill="url(#discGrad)" stroke="#382d5e" stroke-width="2"/>
+  <circle cx="250" cy="250" r="160" fill="none" stroke="#251d42" stroke-width="1.5" stroke-dasharray="8 4"/>
+  <circle cx="250" cy="250" r="140" fill="none" stroke="#221a3c" stroke-width="1.5"/>
+  <circle cx="250" cy="250" r="120" fill="none" stroke="#2a204d" stroke-width="1.5" stroke-dasharray="12 6"/>
+  <circle cx="250" cy="250" r="100" fill="none" stroke="#221a3c" stroke-width="1.5"/>
+  <circle cx="250" cy="250" r="75" fill="#140f26" stroke="url(#accentGrad)" stroke-width="3"/>
+  <circle cx="250" cy="250" r="68" fill="none" stroke="#3b2b68" stroke-width="1"/>
+  <g transform="translate(250, 250)">
+    <circle cx="0" cy="0" r="12" fill="#090810" stroke="url(#accentGrad)" stroke-width="2"/>
+    <path d="M-36 -8 L-36 8 M-24 -18 L-24 18 M-12 -28 L-12 28 M12 -28 L12 28 M24 -18 L24 18 M36 -8 L36 8" 
+          stroke="url(#accentGrad)" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+  <text x="250" y="445" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="700" letter-spacing="6">AFTERHOURS</text>
+</svg>"""
 
-# Resilient static artwork endpoint with Supabase Storage fetch & fallback redirect
+DEFAULT_FALLBACK_ARTWORK_URL = "/api/static/artwork/default.svg"
+
+# Resilient static artwork endpoint with Supabase Storage fetch & fallback
 artwork_dir = Path(settings.ARTWORK_CACHE_DIR)
 artwork_dir.mkdir(parents=True, exist_ok=True)
+
+
+@app.get("/default-artwork.svg")
+@app.get("/api/static/artwork/default.svg")
+async def get_default_artwork():
+    """Serve branded Afterhours default cover artwork with long-term cache."""
+    return Response(
+        content=AFTERHOURS_DEFAULT_ARTWORK_SVG,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=604800, immutable"},
+    )
+
 
 @app.get("/api/static/artwork/{filename}")
 async def get_static_artwork(filename: str):
     """
-    Serve cached artwork, fetching from Supabase Storage on dyno restart or falling back to default cover.
+    Serve cached artwork, fetching from Supabase Storage on dyno restart or falling back to branded SVG.
     """
+    if filename in ("default.svg", "fallback.svg", "default_artwork.svg"):
+        return Response(
+            content=AFTERHOURS_DEFAULT_ARTWORK_SVG,
+            media_type="image/svg+xml",
+            headers={"Cache-Control": "public, max-age=604800, immutable"},
+        )
+
     cached_path = artwork_dir / filename
     if cached_path.exists():
         return FileResponse(str(cached_path))
@@ -143,13 +201,15 @@ async def get_static_artwork(filename: str):
                     cached_path.write_bytes(data)
                     return FileResponse(str(cached_path))
             except Exception:
-                try:
-                    public_url = admin.storage.from_("artwork").get_public_url(filename)
-                    return RedirectResponse(url=public_url, status_code=307)
-                except Exception:
-                    pass
+                # File not found in Supabase Storage: fall through to brand-consistent SVG cover
+                pass
 
-    return RedirectResponse(url=DEFAULT_FALLBACK_ARTWORK_URL, status_code=307)
+    # Never return 404 or broken external redirects: serve brand-consistent SVG cover
+    return Response(
+        content=AFTERHOURS_DEFAULT_ARTWORK_SVG,
+        media_type="image/svg+xml",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 # Mount Routers
 app.include_router(auth.router)

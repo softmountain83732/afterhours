@@ -62,9 +62,9 @@ export default function SetupPage() {
           <div className="w-12 h-12 rounded-2xl bg-primary/20 border border-primary/30 flex items-center justify-center text-primary mb-3 shadow-lg">
             <Sparkles className="w-6 h-6" />
           </div>
-          <h1 className="text-2xl font-extrabold tracking-tight">Welcome to Afterhours</h1>
+          <h1 className="text-2xl font-extrabold tracking-tight">Customize Your Profile</h1>
           <p className="text-xs text-content-secondary mt-1">
-            Complete your profile to start listening and sharing music.
+            Personalize your Afterhours experience or jump right in.
           </p>
         </div>
 
@@ -166,7 +166,18 @@ export default function SetupPage() {
             disabled={isSubmitting || !displayName.trim() || !username.trim()}
             className="w-full py-3 rounded-xl bg-primary hover:bg-primary-hover text-white font-bold text-xs shadow-lg shadow-primary/25 disabled:opacity-50 transition-all active:scale-[0.98]"
           >
-            {isSubmitting ? "Setting up..." : "Enter Afterhours"}
+            {isSubmitting ? "Saving Profile..." : "Save & Continue"}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              haptic("light");
+              router.push("/library");
+            }}
+            className="w-full py-2 text-center text-xs font-semibold text-content-muted hover:text-content-primary transition-colors"
+          >
+            Skip for now →
           </button>
         </form>
       </div>

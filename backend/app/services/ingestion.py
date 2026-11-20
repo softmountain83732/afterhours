@@ -139,7 +139,10 @@ class IngestionService:
 
     @staticmethod
     def extract_artwork(file_path: Path) -> Optional[bytes]:
-        """Extract embedded high-resolution album artwork bytes from audio file."""
+        """
+        Extract embedded high-resolution album artwork bytes from audio file.
+        Supports FLAC, MP3 (ID3v2.3/v2.4 and v2.2), M4A/MP4, OGG Vorbis, and Opus.
+        """
         try:
             audio = mutagen.File(file_path)
             if audio is None:
@@ -147,41 +150,62 @@ class IngestionService:
 
             # 1. FLAC pictures
             if isinstance(audio, FLAC) and audio.pictures:
-                # Find cover picture (type 3) or first picture
                 for pic in audio.pictures:
-                    if pic.type == 3:
+                    if pic.type == 3:  # Front cover
                         return pic.data
                 return audio.pictures[0].data
 
-            # 2. ID3 (MP3)
-            tags = audio.tags if hasattr(audio, "tags") else audio
+            # 2. Check METADATA_BLOCK_PICTURE (FLAC tags or OGG / Opus)
+            tags = getattr(audio, "tags", None) or audio
+            if tags and hasattr(tags, "get"):
+                meta_pic = tags.get("metadata_block_picture") or tags.get("METADATA_BLOCK_PICTURE")
+                if meta_pic:
+                    try:
+                        import base64
+                        b64_str = meta_pic[0] if isinstance(meta_pic, list) else meta_pic
+                        pic_data = base64.b64decode(b64_str)
+                        parsed_pic = Picture(pic_data)
+                        return parsed_pic.data
+                    except Exception:
+                        pass
+
+            # 3. ID3 (MP3) - APIC (ID3v2.3+) and PIC (ID3v2.2)
             if tags:
-                # Look for APIC frame
                 if hasattr(tags, "getall"):
+                    # Check APIC
                     apic_frames = tags.getall("APIC")
                     for apic in apic_frames:
-                        if apic.type == 3:  # Front cover
+                        if getattr(apic, "type", None) == 3:  # Front cover
                             return apic.data
                     if apic_frames:
                         return apic_frames[0].data
 
-                # In case keys are like 'APIC:'
-                for key in tags.keys():
-                    if key.startswith("APIC"):
+                    # Check PIC (ID3v2.2)
+                    pic_frames = tags.getall("PIC")
+                    for p in pic_frames:
+                        if getattr(p, "type", None) == 3:
+                            return p.data
+                    if pic_frames:
+                        return pic_frames[0].data
+
+                # In case keys are like 'APIC:' or 'APIC:Cover'
+                for key in list(getattr(tags, "keys", lambda: [])()):
+                    if key.startswith("APIC") or key.startswith("PIC"):
                         frame = tags[key]
                         if hasattr(frame, "data"):
                             return frame.data
 
-            # 3. MP4 / M4A cover art
+            # 4. MP4 / M4A cover art
             if isinstance(audio, MP4) and audio.tags:
                 covr = audio.tags.get("covr")
                 if covr and len(covr) > 0:
-                    return bytes(covr[0])
+                    covr_item = covr[0]
+                    return bytes(covr_item) if not isinstance(covr_item, bytes) else covr_item
 
         except Exception:
             pass
 
-        # 4. Fallback: FFmpeg video stream extraction (for audio files with attached pictures)
+        # 5. Fallback: FFmpeg video stream extraction (for audio files with attached pictures)
         try:
             with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_img:
                 tmp_img_path = Path(tmp_img.name)
@@ -219,10 +243,11 @@ class IngestionService:
     def optimize_artwork(image_bytes: bytes) -> Tuple[bytes, bytes]:
         """
         Produce high-res full image (max 800x800) and thumbnail (max 300x300) in WebP format.
+        Handles CMYK, RGBA, P, LA, and grayscale modes gracefully.
         Returns: (full_webp_bytes, thumb_webp_bytes)
         """
         image = Image.open(io.BytesIO(image_bytes))
-        if image.mode in ("RGBA", "P"):
+        if image.mode != "RGB":
             image = image.convert("RGB")
 
         # 1. Full cover: max 800x800

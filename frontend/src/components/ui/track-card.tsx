@@ -6,6 +6,7 @@ import { Track } from "@/lib/types";
 import { usePlayer } from "@/contexts/player-context";
 import { useTelegram } from "@/contexts/telegram-context";
 import { TrackContextMenu } from "./track-context-menu";
+import { TrackArtwork } from "./track-artwork";
 
 interface TrackCardProps {
   track: Track;
@@ -63,11 +64,6 @@ export const TrackCard: React.FC<TrackCardProps> = ({
     }
   };
 
-  const artwork =
-    track.artwork_thumb_url ||
-    track.artwork_url ||
-    "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=300&q=80";
-
   return (
     <>
       <div
@@ -84,25 +80,18 @@ export const TrackCard: React.FC<TrackCardProps> = ({
           )}
 
           {showCover && (
-            <div className="relative w-11 h-11 flex-shrink-0 rounded-lg overflow-hidden bg-surface-light border border-border/40">
-              <img
-                src={artwork}
-                alt=""
-                className="w-full h-full object-cover"
-                onError={(e) => {
-                  (e.target as HTMLImageElement).src =
-                    "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=300&q=80";
-                }}
-              />
-              {isCurrentlyPlaying && (
-                <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-                  <div className="flex items-end space-x-0.5 h-3">
-                    <span className="w-0.5 h-3 bg-primary animate-pulse" />
-                    <span className="w-0.5 h-2 bg-primary animate-pulse delay-75" />
-                    <span className="w-0.5 h-3 bg-primary animate-pulse delay-150" />
+            <div className="relative w-11 h-11 flex-shrink-0 rounded-lg overflow-hidden border border-border/40">
+              <TrackArtwork src={track.artwork_thumb_url || track.artwork_url} alt={track.title}>
+                {isCurrentlyPlaying && (
+                  <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                    <div className="flex items-end space-x-0.5 h-3">
+                      <span className="w-0.5 h-3 bg-primary animate-pulse" />
+                      <span className="w-0.5 h-2 bg-primary animate-pulse delay-75" />
+                      <span className="w-0.5 h-3 bg-primary animate-pulse delay-150" />
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
+              </TrackArtwork>
             </div>
           )}
 

@@ -1,8 +1,13 @@
 export interface UserProfile {
   id: string;
   telegram_id: number;
+  telegram_user_id?: number;
   username: string;
+  first_name?: string | null;
+  last_name?: string | null;
   display_name: string;
+  language_code?: string | null;
+  is_bot?: boolean;
   bio?: string;
   avatar_url?: string | null;
   gender?: string | null;

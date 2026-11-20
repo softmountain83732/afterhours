@@ -132,8 +132,8 @@ async def upload_audio_file(
         # 4. Extract embedded artwork and optimize
         artwork_bytes = IngestionService.extract_artwork(temp_path)
         img_hash = None
-        artwork_url = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&q=80"
-        artwork_thumb_url = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=300&q=80"
+        artwork_url = "/api/static/artwork/default.svg"
+        artwork_thumb_url = "/api/static/artwork/default.svg"
 
         if artwork_bytes:
             try:
@@ -157,6 +157,10 @@ async def upload_audio_file(
                     admin = supabase_service.get_admin()
                     if admin:
                         try:
+                            try:
+                                admin.storage.create_bucket("artwork", options={"public": True})
+                            except Exception:
+                                pass
                             admin.storage.from_("artwork").upload(
                                 path=f"{img_hash}_full.webp",
                                 file=full_webp,

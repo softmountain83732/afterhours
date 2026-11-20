@@ -23,6 +23,7 @@ import {
 } from "lucide-react";
 import { ChatMessage, Track, QueueItem } from "@/lib/types";
 import { api } from "@/lib/api";
+import { TrackArtwork } from "@/components/ui/track-artwork";
 import { useAuth } from "@/contexts/auth-context";
 import { usePlayer } from "@/contexts/player-context";
 import { useTelegram } from "@/contexts/telegram-context";
@@ -272,15 +273,10 @@ export default function RoomDetailPage() {
       {/* ─── NOW PLAYING DISPLAY ─────────────────────────────────────────── */}
       <div className="p-4 rounded-2xl bg-surface-hover/80 border border-border flex items-center justify-between">
         <div className="flex items-center space-x-3 overflow-hidden flex-1 pr-3">
-          <div className="relative w-12 h-12 flex-shrink-0 rounded-xl overflow-hidden bg-surface-light border border-border/40">
-            <img
-              src={
-                room.current_track?.artwork_thumb_url ||
-                room.current_track?.artwork_url ||
-                "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=200&q=80"
-              }
-              alt=""
-              className="w-full h-full object-cover"
+          <div className="relative w-12 h-12 flex-shrink-0 rounded-xl overflow-hidden border border-border/40">
+            <TrackArtwork
+              src={room.current_track?.artwork_thumb_url || room.current_track?.artwork_url}
+              alt={room.current_track?.title || "Track"}
             />
           </div>
           <div className="flex flex-col min-w-0">

@@ -15,6 +15,7 @@ from app.auth import (
 from app.config import get_settings
 from app.db import db
 from app.services.supabase_client import supabase_service
+from app.services.user_service import user_service
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -138,125 +139,30 @@ async def dev_auth(request: Request):
 
 @router.post("/telegram")
 async def telegram_auth(req: TelegramAuthRequest):
-    """Validate Telegram WebApp initData and authenticate user."""
+    """
+    Validate Telegram WebApp initData, automatically upsert the user profile
+    using user_service, and issue an application JWT.
+    """
     settings = get_settings()
     tg_user = validate_telegram_init_data(req.init_data, settings.TELEGRAM_BOT_TOKEN)
 
-    tg_id = tg_user.get("id")
-    username = tg_user.get("username") or f"user_{tg_id}"
-    first_name = tg_user.get("first_name", "")
-    last_name = tg_user.get("last_name", "")
-    display_name = f"{first_name} {last_name}".strip() or username
+    # Upsert user record via UserService (HBTU identity synchronization pattern)
+    profile = await user_service.register_or_sync_telegram_user(tg_user)
 
-    is_new_user = False
-
-    if supabase_service.is_live:
-        admin = supabase_service.get_admin()
-        res = admin.table("profiles").select("*").eq("telegram_id", tg_id).execute()
-        if res.data:
-            profile = res.data[0]
-            user_id = profile["id"]
-            is_completed = profile.get("profile_completed")
-            if is_completed is None:
-                is_completed = bool(profile.get("bio") or profile.get("gender") is not None or profile.get("avatar_url"))
-            profile["profile_completed"] = bool(is_completed)
-        else:
-            is_new_user = True
-            # Unique username
-            base_username = username.lower()
-            candidate = base_username
-            suffix = 1
-            while True:
-                existing = admin.table("profiles").select("id").eq("username", candidate).execute()
-                if not existing.data:
-                    break
-                candidate = f"{base_username}_{suffix}"
-                suffix += 1
-            username = candidate
-
-            # Create auth.users
-            email = f"tg_{tg_id}@afterhours.local"
-            password = derive_user_password(tg_id, settings.AUTH_SECRET)
-            try:
-                auth_user = admin.auth.admin.create_user({
-                    "email": email,
-                    "password": password,
-                    "email_confirm": True,
-                    "user_metadata": {"telegram_id": tg_id, "username": username}
-                })
-                user_id = str(auth_user.user.id)
-            except Exception:
-                users = admin.auth.admin.list_users()
-                matching = [u for u in users if u.email == email]
-                if matching:
-                    user_id = str(matching[0].id)
-                else:
-                    user_id = str(uuid.uuid4())
-
-            profile = {
-                "id": user_id,
-                "telegram_id": tg_id,
-                "username": username,
-                "display_name": display_name,
-                "bio": "",
-                "avatar_url": None,
-                "gender": None,
-                "gender_public": False,
-                "is_guest": False,
-            }
-            try:
-                admin.table("profiles").insert({**profile, "profile_completed": False}).execute()
-            except Exception:
-                admin.table("profiles").insert(profile).execute()
-            profile["profile_completed"] = False
-
-        db.profiles[user_id] = profile
-        db.profiles_by_telegram[tg_id] = user_id
-        db.profiles_by_username[profile["username"]] = user_id
-    else:
-        user_id = db.profiles_by_telegram.get(tg_id)
-        if not user_id:
-            is_new_user = True
-            user_id = str(uuid.uuid4())
-            base_username = username.lower()
-            candidate = base_username
-            suffix = 1
-            while candidate in db.profiles_by_username:
-                candidate = f"{base_username}_{suffix}"
-                suffix += 1
-            username = candidate
-
-            profile = {
-                "id": user_id,
-                "telegram_id": tg_id,
-                "username": username,
-                "display_name": display_name,
-                "bio": "",
-                "avatar_url": None,
-                "gender": None,
-                "gender_public": False,
-                "is_guest": False,
-                "profile_completed": False,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
-            db.profiles[user_id] = profile
-            db.profiles_by_telegram[tg_id] = user_id
-            db.profiles_by_username[username] = user_id
-        else:
-            profile = db.profiles[user_id]
+    user_id = profile["id"]
+    tg_id = profile.get("telegram_id") or profile.get("telegram_user_id") or tg_user.get("id")
 
     token = create_app_jwt(
         user_id=user_id,
         telegram_id=tg_id,
         username=profile["username"],
-        is_guest=profile.get("is_guest", False)
+        is_guest=False
     )
 
     return {
         "access_token": token,
         "token_type": "bearer",
-        "is_new_user": is_new_user or (profile.get("profile_completed") is False),
+        "is_new_user": False,
         "profile": profile
     }
 

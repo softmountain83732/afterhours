@@ -15,8 +15,8 @@ logger = logging.getLogger("tracks")
 router = APIRouter(prefix="/api/tracks", tags=["tracks"])
 
 
-DEFAULT_FALLBACK_ARTWORK_URL = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&q=80"
-DEFAULT_FALLBACK_ARTWORK_THUMB_URL = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=300&q=80"
+DEFAULT_FALLBACK_ARTWORK_URL = "/api/static/artwork/default.svg"
+DEFAULT_FALLBACK_ARTWORK_THUMB_URL = "/api/static/artwork/default.svg"
 
 
 def format_track(t: Dict[str, Any], is_favorite: bool = False) -> Dict[str, Any]:

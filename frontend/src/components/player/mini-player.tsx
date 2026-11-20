@@ -5,6 +5,7 @@ import Image from "next/image";
 import { Play, Pause, SkipForward } from "lucide-react";
 import { usePlayer } from "@/contexts/player-context";
 import { useTelegram } from "@/contexts/telegram-context";
+import { TrackArtwork } from "@/components/ui/track-artwork";
 
 export const MiniPlayer: React.FC = () => {
   const { currentTrack, isPlaying, togglePlay, next, currentTime, duration, setIsFullPlayerOpen } = usePlayer();
@@ -13,7 +14,6 @@ export const MiniPlayer: React.FC = () => {
   if (!currentTrack) return null;
 
   const progressPercent = duration > 0 ? (currentTime / duration) * 100 : 0;
-  const artwork = currentTrack.artwork_thumb_url || currentTrack.artwork_url || "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=300&q=80";
 
   return (
     <div
@@ -34,11 +34,10 @@ export const MiniPlayer: React.FC = () => {
       <div className="flex items-center justify-between p-2.5">
         {/* Track Artwork & Info */}
         <div className="flex items-center space-x-3 overflow-hidden flex-1 pr-2">
-          <div className="relative w-11 h-11 flex-shrink-0 rounded-xl overflow-hidden shadow-md bg-surface-light border border-border/40">
-            <img
-              src={artwork}
+          <div className="relative w-11 h-11 flex-shrink-0 rounded-xl overflow-hidden shadow-md border border-border/40">
+            <TrackArtwork
+              src={currentTrack.artwork_thumb_url || currentTrack.artwork_url}
               alt={currentTrack.title}
-              className="w-full h-full object-cover"
             />
           </div>
           <div className="flex flex-col min-w-0">

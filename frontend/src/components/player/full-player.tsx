@@ -21,6 +21,8 @@ import {
 import { usePlayer } from "@/contexts/player-context";
 import { useTelegram } from "@/contexts/telegram-context";
 import { AudioQuality, Track } from "@/lib/types";
+import { TrackArtwork } from "@/components/ui/track-artwork";
+import { resolveArtworkUrl } from "@/lib/artwork";
 
 function formatTime(seconds: number): string {
   if (isNaN(seconds) || seconds < 0) return "0:00";
@@ -122,11 +124,8 @@ export const FullPlayer: React.FC = () => {
 
   if (!isFullPlayerOpen || !currentTrack) return null;
 
-  const artworkFull =
-    currentTrack.artwork_url ||
-    currentTrack.artwork_thumb_url ||
-    "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&q=80";
-  const artworkThumb = currentTrack.artwork_thumb_url || artworkFull;
+  const artworkFull = resolveArtworkUrl(currentTrack.artwork_url || currentTrack.artwork_thumb_url);
+  const artworkThumb = resolveArtworkUrl(currentTrack.artwork_thumb_url || currentTrack.artwork_url);
 
   const progressPercent =
     duration > 0 ? ((isSeeking ? seekValue : currentTime) / duration) * 100 : 0;
@@ -270,14 +269,10 @@ export const FullPlayer: React.FC = () => {
       {/* ─── ALBUM ARTWORK ─────────────────────────────────────────────────── */}
       <div className="relative z-10 flex-1 flex items-center justify-center px-8 py-4">
         <div className="relative w-full aspect-square max-w-[340px] max-h-[340px] rounded-3xl overflow-hidden shadow-2xl border border-border/40">
-          <img
-            src={artworkFull}
+          <TrackArtwork
+            src={currentTrack.artwork_url || currentTrack.artwork_thumb_url}
             alt={currentTrack.title}
-            className="w-full h-full object-cover transition-transform duration-500 hover:scale-105"
-            onError={(e) => {
-              (e.target as HTMLImageElement).src =
-                "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&q=80";
-            }}
+            classNameImage="transition-transform duration-500 hover:scale-105"
           />
         </div>
       </div>
@@ -547,21 +542,21 @@ export const FullPlayer: React.FC = () => {
                       }}
                       className="flex items-center space-x-3 overflow-hidden flex-1 cursor-pointer pr-2"
                     >
-                      <div className="relative w-10 h-10 flex-shrink-0 rounded-lg overflow-hidden bg-surface-light border border-border/40">
-                        <img
-                          src={t.artwork_thumb_url || t.artwork_url || artworkThumb}
-                          alt=""
-                          className="w-full h-full object-cover"
-                        />
-                        {isCurrent && isPlaying && (
-                          <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-                            <div className="flex items-end space-x-0.5 h-2.5">
-                              <span className="w-0.5 h-2.5 bg-primary animate-pulse" />
-                              <span className="w-0.5 h-1.5 bg-primary animate-pulse delay-75" />
-                              <span className="w-0.5 h-2.5 bg-primary animate-pulse delay-150" />
+                      <div className="relative w-10 h-10 flex-shrink-0 rounded-lg overflow-hidden border border-border/40">
+                        <TrackArtwork
+                          src={t.artwork_thumb_url || t.artwork_url}
+                          alt={t.title}
+                        >
+                          {isCurrent && isPlaying && (
+                            <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                              <div className="flex items-end space-x-0.5 h-2.5">
+                                <span className="w-0.5 h-2.5 bg-primary animate-pulse" />
+                                <span className="w-0.5 h-1.5 bg-primary animate-pulse delay-75" />
+                                <span className="w-0.5 h-2.5 bg-primary animate-pulse delay-150" />
+                              </div>
                             </div>
-                          </div>
-                        )}
+                          )}
+                        </TrackArtwork>
                       </div>
 
                       <div className="flex flex-col min-w-0">

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Users, Radio, Disc3 } from "lucide-react";
 import { Room } from "@/lib/types";
 import { useTelegram } from "@/contexts/telegram-context";
+import { TrackArtwork } from "./track-artwork";
 
 interface RoomCardProps {
   room: Room;
@@ -46,11 +47,10 @@ export const RoomCard: React.FC<RoomCardProps> = ({ room }) => {
       {/* Now Playing preview */}
       {room.current_track && (
         <div className="mt-3.5 pt-3 border-t border-border/40 flex items-center space-x-3">
-          <div className="w-8 h-8 rounded-lg overflow-hidden bg-surface-light border border-border/40 flex-shrink-0">
-            <img
-              src={room.current_track.artwork_thumb_url || room.current_track.artwork_url || "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=100&q=80"}
-              alt=""
-              className="w-full h-full object-cover"
+          <div className="w-8 h-8 rounded-lg overflow-hidden border border-border/40 flex-shrink-0">
+            <TrackArtwork
+              src={room.current_track.artwork_thumb_url || room.current_track.artwork_url}
+              alt={room.current_track.title}
             />
           </div>
           <div className="flex flex-col min-w-0">

@@ -6,6 +6,7 @@ import { Play, Shuffle, Trash2, ArrowLeft, Plus, Lock, Globe } from "lucide-reac
 import { Playlist, Track } from "@/lib/types";
 import { api } from "@/lib/api";
 import { TrackCard } from "@/components/ui/track-card";
+import { TrackArtwork } from "@/components/ui/track-artwork";
 import { usePlayer } from "@/contexts/player-context";
 import { useTelegram } from "@/contexts/telegram-context";
 
@@ -113,7 +114,6 @@ export default function PlaylistDetailPage() {
   }
 
   const tracks = playlist.tracks || [];
-  const artwork = playlist.preview_artwork || "https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=400&q=80";
 
   return (
     <div className="flex flex-col space-y-5 pb-8">
@@ -140,8 +140,8 @@ export default function PlaylistDetailPage() {
 
       {/* Playlist Hero */}
       <div className="flex items-center space-x-4 p-4 rounded-3xl bg-surface/80 border border-border">
-        <div className="relative w-24 h-24 rounded-2xl overflow-hidden bg-surface-light border border-border/60 flex-shrink-0 shadow-lg">
-          <img src={artwork} alt="" className="w-full h-full object-cover" />
+        <div className="relative w-24 h-24 rounded-2xl overflow-hidden border border-border/60 flex-shrink-0 shadow-lg">
+          <TrackArtwork src={playlist.preview_artwork} alt={playlist.name} />
         </div>
 
         <div className="flex flex-col min-w-0">

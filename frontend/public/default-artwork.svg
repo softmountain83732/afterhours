@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 500 500" width="100%" height="100%">
+  <defs>
+    <radialGradient id="bg" cx="50%" cy="50%" r="70%">
+      <stop offset="0%" stop-color="#1e1838"/>
+      <stop offset="50%" stop-color="#120e24"/>
+      <stop offset="100%" stop-color="#08070d"/>
+    </radialGradient>
+    <radialGradient id="glow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#a855f7" stop-opacity="0.4"/>
+      <stop offset="60%" stop-color="#6366f1" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="discGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#2a2347"/>
+      <stop offset="100%" stop-color="#110d1f"/>
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#c084fc"/>
+      <stop offset="50%" stop-color="#818cf8"/>
+      <stop offset="100%" stop-color="#38bdf8"/>
+    </linearGradient>
+  </defs>
+  <rect width="500" height="500" rx="36" fill="url(#bg)"/>
+  <circle cx="250" cy="250" r="220" fill="url(#glow)"/>
+  <circle cx="250" cy="250" r="180" fill="url(#discGrad)" stroke="#382d5e" stroke-width="2"/>
+  <circle cx="250" cy="250" r="160" fill="none" stroke="#251d42" stroke-width="1.5" stroke-dasharray="8 4"/>
+  <circle cx="250" cy="250" r="140" fill="none" stroke="#221a3c" stroke-width="1.5"/>
+  <circle cx="250" cy="250" r="120" fill="none" stroke="#2a204d" stroke-width="1.5" stroke-dasharray="12 6"/>
+  <circle cx="250" cy="250" r="100" fill="none" stroke="#221a3c" stroke-width="1.5"/>
+  <circle cx="250" cy="250" r="75" fill="#140f26" stroke="url(#accentGrad)" stroke-width="3"/>
+  <circle cx="250" cy="250" r="68" fill="none" stroke="#3b2b68" stroke-width="1"/>
+  <g transform="translate(250, 250)">
+    <circle cx="0" cy="0" r="12" fill="#090810" stroke="url(#accentGrad)" stroke-width="2"/>
+    <path d="M-36 -8 L-36 8 M-24 -18 L-24 18 M-12 -28 L-12 28 M12 -28 L12 28 M24 -18 L24 18 M36 -8 L36 8" 
+          stroke="url(#accentGrad)" stroke-width="3.5" stroke-linecap="round"/>
+  </g>
+  <text x="250" y="445" text-anchor="middle" fill="#94a3b8" font-family="system-ui, -apple-system, sans-serif" font-size="14" font-weight="700" letter-spacing="6">AFTERHOURS</text>
+</svg>

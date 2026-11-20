@@ -21,6 +21,7 @@ import { api } from "@/lib/api";
 import { useAuth } from "@/contexts/auth-context";
 import { usePlayer } from "@/contexts/player-context";
 import { useTelegram } from "@/contexts/telegram-context";
+import { TrackArtwork } from "./track-artwork";
 
 interface TrackContextMenuProps {
   track: Track | null;
@@ -120,11 +121,6 @@ export const TrackContextMenu: React.FC<TrackContextMenuProps> = ({
   };
 
   if (!isOpen || !track) return null;
-
-  const artwork =
-    track.artwork_thumb_url ||
-    track.artwork_url ||
-    "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=300&q=80";
 
   const handleToggleFav = async () => {
     haptic("medium");
@@ -278,15 +274,10 @@ export const TrackContextMenu: React.FC<TrackContextMenuProps> = ({
 
         {/* Track Header Card */}
         <div className="p-4 flex items-center space-x-3 border-b border-border/50">
-          <div className="relative w-14 h-14 rounded-xl overflow-hidden bg-surface-light border border-border/60 flex-shrink-0">
-            <img
-              src={artwork}
-              alt=""
-              className="w-full h-full object-cover"
-              onError={(e) => {
-                (e.target as HTMLImageElement).src =
-                  "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=300&q=80";
-              }}
+          <div className="relative w-14 h-14 rounded-xl overflow-hidden border border-border/60 flex-shrink-0">
+            <TrackArtwork
+              src={track.artwork_thumb_url || track.artwork_url}
+              alt={track.title}
             />
           </div>
 

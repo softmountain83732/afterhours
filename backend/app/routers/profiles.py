@@ -192,6 +192,7 @@ async def get_my_profile(user: dict = Depends(get_current_user)):
 
         return {
             **profile,
+            "telegram_user_id": profile.get("telegram_user_id") or profile.get("telegram_id"),
             "profile_completed": bool(is_completed),
             "uploads_count": uploads_count,
             "playlists_count": playlists_count,
@@ -224,6 +225,7 @@ async def get_my_profile(user: dict = Depends(get_current_user)):
 
     return {
         **profile,
+        "telegram_user_id": profile.get("telegram_user_id") or profile.get("telegram_id"),
         "uploads_count": my_uploads_count,
         "playlists_count": my_playlists_count,
         "favorites_count": my_favorites_count,

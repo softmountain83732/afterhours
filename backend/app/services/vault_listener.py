@@ -24,8 +24,8 @@ from app.services.telegram import telegram_service
 logger = logging.getLogger("vault_listener")
 
 SUPPORTED_AUDIO_EXTENSIONS = {".flac", ".mp3", ".m4a", ".aac", ".ogg", ".opus", ".wav"}
-DEFAULT_FALLBACK_ARTWORK_URL = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=800&q=80"
-DEFAULT_FALLBACK_ARTWORK_THUMB_URL = "https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?w=300&q=80"
+DEFAULT_FALLBACK_ARTWORK_URL = "/api/static/artwork/default.svg"
+DEFAULT_FALLBACK_ARTWORK_THUMB_URL = "/api/static/artwork/default.svg"
 
 
 class WatermarkTracker:
@@ -484,6 +484,11 @@ class VaultListenerService:
                             admin = supabase_service.get_admin()
                             if admin:
                                 try:
+                                    # Ensure public bucket exists for permanent persistence across dyno restarts
+                                    try:
+                                        admin.storage.create_bucket("artwork", options={"public": True})
+                                    except Exception:
+                                        pass
                                     admin.storage.from_("artwork").upload(
                                         path=f"{img_hash}_full.webp",
                                         file=full_webp,
