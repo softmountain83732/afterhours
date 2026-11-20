@@ -21,28 +21,48 @@ logger = logging.getLogger("auth")
 security = HTTPBearer(auto_error=False)
 
 
-def validate_telegram_init_data(init_data: str, bot_token: str, max_age_seconds: int = 86400 * 30) -> Dict[str, Any]:
+def validate_telegram_init_data(init_data: str, bot_token: str, max_age_seconds: int = 300) -> Dict[str, Any]:
     """
     Validate Telegram WebApp initData string using official HMAC-SHA256 algorithm.
     Returns parsed user dict if valid, raises HTTPException otherwise.
-    Safe diagnostics are logged on validation failure without leaking secrets.
+    Strictly adheres to Telegram Mini App specification:
+      - 5-minute (300s) default freshness limit to prevent replay attacks.
+      - Strips whitespace/quotes from bot token.
+      - Disallows duplicate query parameters to prevent parameter pollution.
+      - Preserves exact raw parameter values (unquoted) for data-check-string.
+      - Handles optional Bot API 7+/8+ 'signature' parameter without arbitrary exclusion.
+      - Constant-time HMAC-SHA256 verification.
+      - Never logs bot tokens, prefixes, lengths, or raw initData.
     """
-    if not init_data:
+    if not init_data or not isinstance(init_data, str) or not init_data.strip():
         logger.warning("Telegram auth validation failed: initData is empty or missing")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing Telegram initData"
         )
 
+    raw_init_data = init_data.strip()
+
+    # If full URL or fragment was passed, extract query portion
+    if "tgWebAppData=" in raw_init_data:
+        extracted = None
+        for chunk in raw_init_data.replace("#", "&").replace("?", "&").split("&"):
+            if chunk.startswith("tgWebAppData="):
+                extracted = urllib.parse.unquote(chunk[len("tgWebAppData="):])
+                break
+        if extracted:
+            raw_init_data = extracted
+
+    if raw_init_data.startswith("?") or raw_init_data.startswith("#"):
+        raw_init_data = raw_init_data[1:]
+
     # Clean bot token of quotes/spaces
     clean_bot_token = (bot_token or "").strip().strip("'\"")
-    bot_token_len = len(clean_bot_token)
-    bot_prefix = clean_bot_token[:6] + "..." if bot_token_len >= 6 else "(none)"
 
     # In development mode with placeholder token, allow mock data for testing
     settings = get_settings()
-    if settings.ENVIRONMENT == "development" and init_data.startswith("mock_"):
-        parts = init_data.split("_")
+    if settings.ENVIRONMENT == "development" and raw_init_data.startswith("mock_"):
+        parts = raw_init_data.split("_")
         tg_id = int(parts[1]) if len(parts) > 1 else 999999
         username = parts[2] if len(parts) > 2 else "devuser"
         first_name = parts[3] if len(parts) > 3 else "Dev User"
@@ -54,7 +74,9 @@ def validate_telegram_init_data(init_data: str, bot_token: str, max_age_seconds:
         }
 
     try:
-        parsed_params = dict(urllib.parse.parse_qsl(init_data, keep_blank_values=True))
+        pairs = urllib.parse.parse_qsl(raw_init_data, keep_blank_values=True)
+        if not pairs:
+            raise ValueError("No parameters found in initData")
     except Exception as e:
         logger.warning("Telegram auth validation failed: parse_qsl error: %s", str(e))
         raise HTTPException(
@@ -62,19 +84,29 @@ def validate_telegram_init_data(init_data: str, bot_token: str, max_age_seconds:
             detail=f"Failed to parse initData: {str(e)}"
         )
 
-    received_hash = parsed_params.pop("hash", None)
-    if not received_hash:
-        logger.warning(
-            "Telegram auth validation failed: missing 'hash' param. Keys present: %s",
-            sorted(list(parsed_params.keys())),
+    # Check for duplicate parameter keys (prevent HTTP parameter pollution and ambiguous HMAC)
+    keys = [k for k, _ in pairs]
+    if len(keys) != len(set(keys)):
+        logger.warning("Telegram auth validation failed: duplicate parameters detected in initData")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Duplicate parameters in Telegram initData"
         )
+
+    parsed_params = dict(pairs)
+
+    received_hash = parsed_params.pop("hash", None)
+    if not received_hash or not isinstance(received_hash, str) or not received_hash.strip():
+        logger.warning("Telegram auth validation failed: missing 'hash' param.")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing hash in Telegram initData"
         )
+    received_hash = received_hash.strip().lower()
 
-    # Telegram Bot API 7.0+ includes 'signature' parameter which is not part of HMAC-SHA256 check
-    parsed_params.pop("signature", None)
+    # Telegram Bot API 7.0+/8.0+ includes optional third-party Ed25519 'signature' parameter.
+    # In official Telegram HMAC validation using the bot token, 'signature' is excluded.
+    received_signature = parsed_params.pop("signature", None)
 
     # Check auth_date
     auth_date_str = parsed_params.get("auth_date")
@@ -99,6 +131,13 @@ def validate_telegram_init_data(init_data: str, bot_token: str, max_age_seconds:
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="Telegram initData has expired"
             )
+        # Clock skew tolerance: allow maximum 60 seconds into the future
+        if age < -60:
+            logger.warning("Telegram auth validation failed: auth_date is in future (age=%ds)", age)
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Telegram initData has invalid timestamp"
+            )
     except ValueError:
         logger.warning("Telegram auth validation failed: invalid auth_date format (%s)", auth_date_str)
         raise HTTPException(
@@ -108,11 +147,7 @@ def validate_telegram_init_data(init_data: str, bot_token: str, max_age_seconds:
 
     # Verify bot token is configured
     if not clean_bot_token or clean_bot_token.startswith("placeholder"):
-        logger.error(
-            "Telegram bot token is not configured or placeholder (len=%d, prefix=%s). Auth cannot succeed.",
-            bot_token_len,
-            bot_prefix,
-        )
+        logger.error("Telegram bot token is not configured or placeholder. Auth cannot succeed.")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Server Telegram bot token is not configured"
@@ -123,18 +158,28 @@ def validate_telegram_init_data(init_data: str, bot_token: str, max_age_seconds:
         f"{k}={v}" for k, v in sorted(parsed_params.items(), key=lambda item: item[0])
     )
 
-    # Calculate HMAC-SHA256
+    # Calculate HMAC-SHA256: secret_key = HMAC_SHA256("WebAppData", bot_token)
     secret_key = hmac.new(b"WebAppData", clean_bot_token.encode("utf-8"), hashlib.sha256).digest()
     calculated_hash = hmac.new(secret_key, data_check_string.encode("utf-8"), hashlib.sha256).hexdigest()
 
-    if not hmac.compare_digest(calculated_hash, received_hash):
+    is_valid = hmac.compare_digest(calculated_hash, received_hash)
+
+    # If signature parameter was present and official exclusion didn't match, check inclusion fallback
+    if not is_valid and received_signature is not None:
+        params_with_sig = dict(parsed_params)
+        params_with_sig["signature"] = received_signature
+        dcs_with_sig = "\n".join(
+            f"{k}={v}" for k, v in sorted(params_with_sig.items(), key=lambda item: item[0])
+        )
+        alt_hash = hmac.new(secret_key, dcs_with_sig.encode("utf-8"), hashlib.sha256).hexdigest()
+        if hmac.compare_digest(alt_hash, received_hash):
+            is_valid = True
+            calculated_hash = alt_hash
+
+    if not is_valid:
         logger.warning(
-            "Telegram HMAC signature mismatch: received_hash_len=%d, calculated_hash_len=%d, keys=%s, bot_token_len=%d, bot_prefix=%s",
-            len(received_hash),
-            len(calculated_hash),
+            "Telegram HMAC signature mismatch for keys: %s",
             sorted(list(parsed_params.keys())),
-            bot_token_len,
-            bot_prefix,
         )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -164,6 +209,48 @@ def validate_telegram_init_data(init_data: str, bot_token: str, max_age_seconds:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"Invalid user JSON in initData: {str(e)}"
         )
+
+
+async def verify_telegram_bot_identity(bot_token: str) -> Optional[Dict[str, Any]]:
+    """
+    Safely verify that TELEGRAM_BOT_TOKEN belongs to a valid Telegram bot via getMe.
+    Logs ONLY the bot ID, username, and bot first_name. NEVER logs the token or credentials.
+    """
+    clean_token = (bot_token or "").strip().strip("'\"")
+    if not clean_token or clean_token.startswith("placeholder"):
+        logger.info("Telegram bot token is placeholder or empty; skipping Bot API getMe verification.")
+        return None
+
+    try:
+        import asyncio
+        import urllib.request
+        import json
+
+        def _do_get_me():
+            url = f"https://api.telegram.org/bot{clean_token}/getMe"
+            req = urllib.request.Request(url, headers={"User-Agent": "Afterhours-Backend/1.0"})
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                if resp.status == 200:
+                    return json.loads(resp.read().decode("utf-8"))
+            return None
+
+        data = await asyncio.to_thread(_do_get_me)
+        if data and data.get("ok"):
+            res = data.get("result", {})
+            bot_id = res.get("id")
+            username = res.get("username")
+            first_name = res.get("first_name")
+            logger.info("Telegram bot token verified via Bot API: @%s (Bot ID: %s, Name: %s)", username, bot_id, first_name)
+            return {"id": bot_id, "username": username, "first_name": first_name}
+        else:
+            logger.warning("Telegram Bot API getMe verification returned non-OK response.")
+            return None
+    except Exception as e:
+        err_msg = str(e)
+        if clean_token in err_msg:
+            err_msg = err_msg.replace(clean_token, "[REDACTED_BOT_TOKEN]")
+        logger.warning("Telegram Bot API getMe verification failed: %s: %s", type(e).__name__, err_msg)
+        return None
 
 
 def derive_user_password(telegram_id: int, secret: str) -> str:

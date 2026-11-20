@@ -52,6 +52,13 @@ class Settings(BaseSettings):
     # Environment
     ENVIRONMENT: str = "development"
 
+    @field_validator("TELEGRAM_BOT_TOKEN", mode="before")
+    @classmethod
+    def sanitize_telegram_bot_token(cls, v: Optional[str]) -> str:
+        """Sanitize TELEGRAM_BOT_TOKEN (strip quotes/whitespace)."""
+        val = (str(v) if v is not None else "").strip().strip("'\"")
+        return val or "placeholder-bot-token"
+
     @field_validator("SUPABASE_URL", mode="before")
     @classmethod
     def sanitize_supabase_url(cls, v: Optional[str]) -> str:

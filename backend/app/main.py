@@ -68,6 +68,14 @@ async def lifespan(app: FastAPI):
             supabase_service.offline_reason,
         )
 
+    # Verify Telegram Bot Token identity against Telegram Bot API (safe: logs only bot ID and username)
+    if settings.TELEGRAM_BOT_TOKEN and not settings.TELEGRAM_BOT_TOKEN.startswith("placeholder"):
+        try:
+            from app.auth import verify_telegram_bot_identity
+            await verify_telegram_bot_identity(settings.TELEGRAM_BOT_TOKEN)
+        except Exception as e:
+            logger.debug(f"Bot token startup verification check: {e}")
+
     # Initialize Telegram Telethon MTProto client and start Vault listener
     try:
         await telegram_service.initialize()
