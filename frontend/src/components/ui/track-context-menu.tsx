@@ -22,6 +22,7 @@ import { useAuth } from "@/contexts/auth-context";
 import { usePlayer } from "@/contexts/player-context";
 import { useTelegram } from "@/contexts/telegram-context";
 import { TrackArtwork } from "./track-artwork";
+import { getTrackShareUrl } from "@/lib/config";
 
 interface TrackContextMenuProps {
   track: Track | null;
@@ -228,7 +229,7 @@ export const TrackContextMenu: React.FC<TrackContextMenuProps> = ({
 
   const handleShare = async () => {
     haptic("light");
-    const shareUrl = `https://t.me/AfterhoursAudioBot?startapp=track_${track.id}`;
+    const shareUrl = getTrackShareUrl(track.id);
     const shareText = `Listen to ${track.title} by ${track.artist_name} on Afterhours`;
 
     if (typeof navigator !== "undefined" && navigator.share) {

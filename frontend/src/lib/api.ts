@@ -49,6 +49,19 @@ async function refreshDevToken(): Promise<string | null> {
   return refreshPromise;
 }
 
+export class ApiError extends Error {
+  status: number;
+  data?: any;
+
+  constructor(status: number, message: string, data?: any) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.data = data;
+    Object.setPrototypeOf(this, ApiError.prototype);
+  }
+}
+
 interface RequestOptions extends RequestInit {
   _retried?: boolean;
 }
@@ -82,13 +95,14 @@ async function request<T>(endpoint: string, options: RequestOptions = {}): Promi
 
   if (!res.ok) {
     let errorDetail = "API request failed";
+    let errorJson: any = undefined;
     try {
-      const errorJson = await res.json();
+      errorJson = await res.json();
       errorDetail = errorJson.detail || errorDetail;
     } catch {
       errorDetail = await res.text() || res.statusText;
     }
-    throw new Error(errorDetail);
+    throw new ApiError(res.status, errorDetail, errorJson);
   }
 
   return res.json();
@@ -226,5 +240,9 @@ export const api = {
         body: formData,
       });
     },
+  },
+
+  config: {
+    get: () => request<{ bot_username: string; environment: string }>("/api/config"),
   },
 };

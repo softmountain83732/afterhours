@@ -20,6 +20,7 @@ from app.services.audio import AudioService
 from app.services.ingestion import IngestionService
 from app.services.supabase_client import supabase_service
 from app.services.telegram import telegram_service
+from app.services.track_cache import track_response_cache
 
 logger = logging.getLogger("vault_listener")
 
@@ -584,6 +585,7 @@ class VaultListenerService:
 
                     db.track_artwork[artwork_id] = artwork_data
 
+                track_response_cache.invalidate()
                 logger.info(f"Auto-ingested Vault message {msg_id}: '{title}' by {artist_name} ({codec.upper()})")
                 return track_data
 

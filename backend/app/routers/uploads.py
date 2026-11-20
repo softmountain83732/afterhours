@@ -18,6 +18,7 @@ from app.services.cache import FileCache
 from app.services.ingestion import IngestionService
 from app.services.telegram import telegram_service
 from app.services.supabase_client import supabase_service
+from app.services.track_cache import track_response_cache
 
 router = APIRouter(prefix="/api/uploads", tags=["uploads"])
 settings = get_settings()
@@ -120,6 +121,7 @@ async def upload_audio_file(
                         "created_at": datetime.now(timezone.utc).isoformat(),
                     }
                     db.tracks[new_track_id] = duplicate_track
+                    track_response_cache.invalidate()
                     return {
                         "message": "Duplicate file detected. Track registered instantly from Vault cache.",
                         "track": duplicate_track,
@@ -285,6 +287,7 @@ async def upload_audio_file(
                 "is_favorite": False,
             }
 
+            track_response_cache.invalidate()
             return {
                 "message": "Track successfully uploaded and ingested into Afterhours Vault",
                 "track": formatted,
@@ -345,6 +348,7 @@ async def upload_audio_file(
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         db.tracks[track_id] = track
+        track_response_cache.invalidate()
 
         return {
             "message": "Track successfully uploaded and ingested into Afterhours Vault",

@@ -312,19 +312,21 @@ export function useRoomSync(roomId: string, customConfig?: RoomSyncConfig) {
     }
   }, [roomId]);
 
-  const fetchRoomSnapshot = useCallback(async () => {
+  const fetchRoomSnapshot = useCallback(async (): Promise<Room | null> => {
     try {
       const [roomData, queueData] = await Promise.all([
         api.rooms.get(roomId),
         api.rooms.getNormalizedQueue(roomId).catch(() => []),
       ]);
-      if (!isMountedRef.current) return;
+      if (!isMountedRef.current) return null;
       setRoom(roomData);
       roomRef.current = roomData;
       setNormalizedQueue(queueData);
       applyPlaybackState(roomData, clockOffsetRef.current);
+      return roomData;
     } catch {
       // Room offline or network drop
+      return null;
     }
   }, [roomId, applyPlaybackState]);
 
@@ -382,12 +384,12 @@ export function useRoomSync(roomId: string, customConfig?: RoomSyncConfig) {
       checkDriftRef.current();
     }, 300);
 
-    // Fallback slow polling interval: 15s when NOT subscribed to Supabase Realtime (CB-01)
+    // Fallback polling interval: 2500ms when NOT subscribed to Supabase Realtime, pause when document.hidden
     syncLoopRef.current = setInterval(() => {
-      if (!isSubscribedRef.current && isMountedRef.current) {
+      if (!isSubscribedRef.current && isMountedRef.current && typeof document !== "undefined" && !document.hidden) {
         fetchRoomSnapshot();
       }
-    }, 15000);
+    }, 2500);
 
     // Realtime subscription (CB-01)
     let channel: any = null;
@@ -486,12 +488,48 @@ export function useRoomSync(roomId: string, customConfig?: RoomSyncConfig) {
     setPlaybackRate,
   ]);
 
-  // ─── 7. DISPATCH AUTHORITATIVE COMMAND ────────────────────────────────────
+  // ─── 7. DISPATCH AUTHORITATIVE COMMAND WITH OPTIMISTIC UPDATES & 409 RETRY ──
   const sendCommand = useCallback(
-    async (action: string, payload: any = {}) => {
+    async (action: string, payload: any = {}, retryCount = 0): Promise<any> => {
       const activeRoom = roomRef.current || room;
       if (!activeRoom) return;
+
+      const previousRoom = activeRoom;
       const expectedRev = activeRoom.revision;
+
+      // Optimistic updates for responsive host controls
+      if (action === "PAUSE") {
+        const optimistic = { ...activeRoom, is_playing: false };
+        setRoom(optimistic);
+        roomRef.current = optimistic;
+        pause();
+      } else if (action === "PLAY") {
+        const pos = payload.position_ms !== undefined ? payload.position_ms : activeRoom.playback_position_ms;
+        const optimistic = {
+          ...activeRoom,
+          is_playing: true,
+          playback_position_ms: pos,
+          ...(payload.track_id ? { current_track_id: payload.track_id } : {}),
+        };
+        setRoom(optimistic);
+        roomRef.current = optimistic;
+        resume();
+      } else if (action === "SEEK" && payload.position_ms !== undefined) {
+        const optimistic = { ...activeRoom, playback_position_ms: payload.position_ms };
+        setRoom(optimistic);
+        roomRef.current = optimistic;
+        safeSeek(payload.position_ms / 1000);
+      } else if (action === "CHANGE_TRACK" && payload.track_id) {
+        const optimistic = {
+          ...activeRoom,
+          current_track_id: payload.track_id,
+          is_playing: true,
+          playback_position_ms: 0,
+        };
+        setRoom(optimistic);
+        roomRef.current = optimistic;
+      }
+
       try {
         const res = await api.rooms.dispatchCommand(roomId, action, payload, expectedRev);
         if (res.success && res.room) {
@@ -500,19 +538,29 @@ export function useRoomSync(roomId: string, customConfig?: RoomSyncConfig) {
           applyPlaybackState(res.room, clockOffsetRef.current);
         }
         // Refresh queue on queue-related commands
-        if (action.startsWith("QUEUE_") || action === "NEXT_TRACK") {
+        if (action.startsWith("QUEUE_") || action === "NEXT_TRACK" || action === "CHANGE_TRACK") {
           fetchNormalizedQueue();
         }
         return res;
       } catch (err: any) {
-        if (err.status === 409) {
-          // Revision conflict - immediately fetch authoritative state
-          fetchRoomSnapshot();
+        // HTTP 409: Revision Conflict - refresh authoritative state and retry once
+        if (err?.status === 409 && retryCount < 1) {
+          const freshRoom = await fetchRoomSnapshot();
+          if (freshRoom) {
+            return await sendCommand(action, payload, retryCount + 1);
+          }
+        }
+
+        // Roll back optimistic state on error
+        if (previousRoom) {
+          setRoom(previousRoom);
+          roomRef.current = previousRoom;
+          applyPlaybackState(previousRoom, clockOffsetRef.current);
         }
         throw err;
       }
     },
-    [room, roomId, applyPlaybackState, fetchNormalizedQueue, fetchRoomSnapshot]
+    [room, roomId, pause, resume, safeSeek, applyPlaybackState, fetchNormalizedQueue, fetchRoomSnapshot]
   );
 
   return {

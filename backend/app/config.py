@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     TELEGRAM_API_HASH: str = "placeholder-api-hash"
     TELEGRAM_VAULT_CHAT_ID: int = -1001234567890
     TELEGRAM_STRING_SESSION: Optional[str] = None
-    TELEGRAM_BOT_USERNAME: Optional[str] = None
+    TELEGRAM_BOT_USERNAME: str = "afterhoursfmbot"
 
     # Frontend
     FRONTEND_URL: str = "http://localhost:3000"

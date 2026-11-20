@@ -55,6 +55,7 @@ export const TrackArtwork: React.FC<TrackArtworkProps> = ({
         src={currentSrc}
         alt={alt}
         loading="lazy"
+        decoding="async"
         onLoad={handleLoad}
         onError={handleError}
         className={`w-full h-full transition-opacity duration-300 ${

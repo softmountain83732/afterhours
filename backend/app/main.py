@@ -72,7 +72,9 @@ async def lifespan(app: FastAPI):
     if settings.TELEGRAM_BOT_TOKEN and not settings.TELEGRAM_BOT_TOKEN.startswith("placeholder"):
         try:
             from app.auth import verify_telegram_bot_identity
-            await verify_telegram_bot_identity(settings.TELEGRAM_BOT_TOKEN)
+            bot_info = await verify_telegram_bot_identity(settings.TELEGRAM_BOT_TOKEN)
+            if bot_info and bot_info.get("username"):
+                settings.TELEGRAM_BOT_USERNAME = bot_info["username"]
         except Exception as e:
             logger.debug(f"Bot token startup verification check: {e}")
 
@@ -171,6 +173,24 @@ artwork_dir = Path(settings.ARTWORK_CACHE_DIR)
 artwork_dir.mkdir(parents=True, exist_ok=True)
 
 
+@app.get("/api/config")
+async def get_public_config():
+    """
+    Public configuration endpoint exposing active bot username and environment.
+    Never exposes credentials, API hashes, or tokens.
+    """
+    settings = get_settings()
+    bot_username = (
+        getattr(telegram_service, "bot_username", None)
+        or settings.TELEGRAM_BOT_USERNAME
+        or "afterhoursfmbot"
+    )
+    return {
+        "bot_username": bot_username,
+        "environment": settings.ENVIRONMENT,
+    }
+
+
 @app.get("/default-artwork.svg")
 @app.get("/api/static/artwork/default.svg")
 async def get_default_artwork():
@@ -186,6 +206,7 @@ async def get_default_artwork():
 async def get_static_artwork(filename: str):
     """
     Serve cached artwork, fetching from Supabase Storage on dyno restart or falling back to branded SVG.
+    Content-addressed immutable files receive max-age=31536000, immutable.
     """
     if filename in ("default.svg", "fallback.svg", "default_artwork.svg"):
         return Response(
@@ -194,9 +215,28 @@ async def get_static_artwork(filename: str):
             headers={"Cache-Control": "public, max-age=604800, immutable"},
         )
 
+    # Determine media type
+    ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    media_type_map = {
+        "webp": "image/webp",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "png": "image/png",
+        "svg": "image/svg+xml",
+    }
+    media_type = media_type_map.get(ext, "image/webp")
+
+    # Content-addressed artwork files (UUIDs or hashes) are immutable
+    is_content_addressed = len(filename) >= 20 and ext in ("webp", "png", "jpg", "jpeg")
+    cache_headers = (
+        {"Cache-Control": "public, max-age=31536000, immutable"}
+        if is_content_addressed
+        else {"Cache-Control": "public, max-age=86400"}
+    )
+
     cached_path = artwork_dir / filename
     if cached_path.exists():
-        return FileResponse(str(cached_path))
+        return FileResponse(str(cached_path), media_type=media_type, headers=cache_headers)
 
     # If missing on disk (e.g. after Heroku dyno restart), check Supabase Storage
     if supabase_service.is_live:
@@ -207,7 +247,7 @@ async def get_static_artwork(filename: str):
                 if data:
                     cached_path.parent.mkdir(parents=True, exist_ok=True)
                     cached_path.write_bytes(data)
-                    return FileResponse(str(cached_path))
+                    return FileResponse(str(cached_path), media_type=media_type, headers=cache_headers)
             except Exception:
                 # File not found in Supabase Storage: fall through to brand-consistent SVG cover
                 pass

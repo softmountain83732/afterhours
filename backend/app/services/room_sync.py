@@ -91,7 +91,7 @@ def verify_room_permission(
     can_invite = member.get("can_invite", False) or (role in ("host", "dj", "queue_manager", "moderator"))
     can_moderate = member.get("can_moderate", False) or (role in ("host", "moderator"))
 
-    playback_actions = {"PLAY", "PAUSE", "SEEK", "SYNC_PLAYBACK"}
+    playback_actions = {"PLAY", "PAUSE", "SEEK", "SYNC_PLAYBACK", "CHANGE_TRACK"}
     queue_manage_actions = {"QUEUE_ADD", "QUEUE_REMOVE", "QUEUE_REORDER", "NEXT_TRACK"}
     voting_actions = {"QUEUE_VOTE"}
     invite_actions = {"INVITE"}
@@ -283,6 +283,7 @@ def execute_room_command(
         new_rev = current_rev + 1
         now_dt = datetime.now(timezone.utc)
         now_ms = get_current_time_ms()
+        is_duplicate = False
         room_updates: Dict[str, Any] = {
             "revision": new_rev,
             "updated_by": user_id,
@@ -291,12 +292,22 @@ def execute_room_command(
         }
 
         # Handle specific actions
-        if action_upper == "PLAY":
+        if action_upper in ("PLAY", "CHANGE_TRACK"):
+            track_id = payload.get("track_id")
+            if action_upper == "CHANGE_TRACK" and not track_id:
+                raise HTTPException(status_code=400, detail="track_id required for CHANGE_TRACK")
+
+            # Validate track exists in database
+            if track_id:
+                t_check = admin.table("tracks").select("id").eq("id", track_id).execute()
+                if not t_check.data:
+                    raise HTTPException(status_code=404, detail="Track not found")
+
             delay = payload.get("scheduled_delay_ms", DEFAULT_SCHEDULED_DELAY_MS)
             delay = max(MIN_SCHEDULED_DELAY_MS, min(MAX_SCHEDULED_DELAY_MS, delay))
             scheduled_start_ms = now_ms + delay
 
-            pos_ms = payload.get("position_ms", room.get("playback_position_ms", 0))
+            pos_ms = 0 if action_upper == "CHANGE_TRACK" else payload.get("position_ms", room.get("playback_position_ms", 0))
             rate = float(payload.get("playback_rate", 1.0))
 
             room_updates["is_playing"] = True
@@ -305,8 +316,8 @@ def execute_room_command(
             room_updates["scheduled_start_ms"] = scheduled_start_ms
             room_updates["playback_updated_at"] = now_dt.isoformat()
 
-            if payload.get("track_id"):
-                room_updates["current_track_id"] = payload["track_id"]
+            if track_id:
+                room_updates["current_track_id"] = track_id
 
         elif action_upper == "PAUSE":
             pos_ms = payload.get("position_ms", room.get("playback_position_ms", 0))
@@ -332,24 +343,33 @@ def execute_room_command(
             if not track_id:
                 raise HTTPException(status_code=400, detail="track_id required")
 
-            rpc_handled = False
-            try:
-                rpc_res = admin.rpc("add_room_queue_item_atomic", {
-                    "p_room_id": room_id,
-                    "p_track_id": track_id,
-                    "p_user_id": user_id,
-                    "p_expected_revision": expected_revision
-                }).execute()
-                if rpc_res.data:
-                    rpc_handled = True
-                    room_updates["queue"] = rpc_res.data.get("queue", [])
-                    new_rev = rpc_res.data.get("revision", new_rev)
-            except Exception as exc:
-                can_fallback, http_exc = classify_rpc_error(exc)
-                if http_exc:
-                    raise http_exc
-                if not can_fallback:
-                    raise
+            # Check if this track is already pending/unplayed in the queue (deduplicate against retry replay)
+            existing_unplayed = admin.table("room_queue").select("id").eq("room_id", room_id).eq("track_id", track_id).is_("played_at", "null").limit(1).execute()
+            if existing_unplayed.data:
+                # Already in queue: idempotent success without duplicating
+                pending_items = get_room_queue_items(room_id)
+                room_updates["queue"] = [i["track_id"] for i in pending_items]
+                rpc_handled = True
+                is_duplicate = True
+            else:
+                rpc_handled = False
+                try:
+                    rpc_res = admin.rpc("add_room_queue_item_atomic", {
+                        "p_room_id": room_id,
+                        "p_track_id": track_id,
+                        "p_user_id": user_id,
+                        "p_expected_revision": expected_revision
+                    }).execute()
+                    if rpc_res.data:
+                        rpc_handled = True
+                        room_updates["queue"] = rpc_res.data.get("queue", [])
+                        new_rev = rpc_res.data.get("revision", new_rev)
+                except Exception as exc:
+                    can_fallback, http_exc = classify_rpc_error(exc)
+                    if http_exc:
+                        raise http_exc
+                    if not can_fallback:
+                        raise
 
             if not rpc_handled:
                 # Get max position in room_queue
@@ -479,12 +499,19 @@ def execute_room_command(
                     rpc_handled = True
                     d = rpc_res.data
                     room_updates["queue"] = d.get("queue", [])
-                    room_updates["current_track_id"] = d.get("current_track_id")
-                    room_updates["is_playing"] = d.get("is_playing", False)
-                    room_updates["scheduled_start_ms"] = d.get("scheduled_start_ms")
-                    room_updates["playback_position_ms"] = 0
-                    room_updates["playback_updated_at"] = now_dt.isoformat()
                     new_rev = d.get("revision", new_rev)
+                    has_next = d.get("has_next", False)
+                    if has_next and d.get("current_track_id"):
+                        room_updates["current_track_id"] = d.get("current_track_id")
+                        room_updates["is_playing"] = True
+                        room_updates["scheduled_start_ms"] = d.get("scheduled_start_ms")
+                        room_updates["playback_position_ms"] = 0
+                        room_updates["playback_updated_at"] = now_dt.isoformat()
+                    else:
+                        # Queue is empty: preserve existing current_track_id, pause playback gracefully
+                        room_updates["is_playing"] = False
+                        room_updates["scheduled_start_ms"] = None
+                        room_updates["playback_updated_at"] = now_dt.isoformat()
             except Exception as exc:
                 can_fallback, http_exc = classify_rpc_error(exc)
                 if http_exc:
@@ -506,6 +533,11 @@ def execute_room_command(
 
                     # Dual-write remaining legacy queue
                     room_updates["queue"] = [i["track_id"] for i in pending_items[1:]]
+                else:
+                    # Queue is empty in fallback: pause playback gracefully without wiping current track
+                    room_updates["is_playing"] = False
+                    room_updates["scheduled_start_ms"] = None
+                    room_updates["playback_updated_at"] = now_dt.isoformat()
 
         # Commit room updates
         try:
@@ -523,11 +555,11 @@ def execute_room_command(
         updated_room = res.data[0] if res.data else {**room, **room_updates}
 
         record_audit_log(room_id, user_id, action_upper, new_rev, payload)
-        if action_upper in ("PLAY", "PAUSE", "SEEK", "NEXT_TRACK"):
+        if action_upper in ("PLAY", "PAUSE", "SEEK", "NEXT_TRACK", "CHANGE_TRACK"):
             broadcast_room_event(room_id, "playback_sync", {"action": action_upper, "room": updated_room, "revision": new_rev})
         elif action_upper in ("QUEUE_ADD", "QUEUE_REMOVE", "QUEUE_VOTE"):
             broadcast_room_event(room_id, "queue_updated", {"action": action_upper, "queue": updated_room.get("queue", []), "revision": new_rev})
-        return {
+        ret = {
             "success": True,
             "action": action_upper,
             "revision": new_rev,
@@ -535,6 +567,9 @@ def execute_room_command(
             "scheduled_start_ms": room_updates.get("scheduled_start_ms"),
             "room": updated_room,
         }
+        if is_duplicate:
+            ret["is_duplicate"] = True
+        return ret
 
     # In-memory development / unit test implementation
     room = db.rooms.get(room_id)
@@ -558,6 +593,7 @@ def execute_room_command(
     now_dt = datetime.now(timezone.utc)
     now_ms = get_current_time_ms()
     now_iso = now_dt.isoformat()
+    is_duplicate = False
 
     room["revision"] = new_rev
     room["updated_by"] = user_id
@@ -566,12 +602,20 @@ def execute_room_command(
 
     queue_list = db.room_queues.setdefault(room_id, [])
 
-    if action_upper == "PLAY":
+    if action_upper in ("PLAY", "CHANGE_TRACK"):
+        track_id = payload.get("track_id")
+        if action_upper == "CHANGE_TRACK" and not track_id:
+            raise HTTPException(status_code=400, detail="track_id required for CHANGE_TRACK")
+
+        # Validate track exists in mock DB
+        if track_id and track_id not in db.tracks:
+            raise HTTPException(status_code=404, detail="Track not found")
+
         delay = payload.get("scheduled_delay_ms", DEFAULT_SCHEDULED_DELAY_MS)
         delay = max(MIN_SCHEDULED_DELAY_MS, min(MAX_SCHEDULED_DELAY_MS, delay))
         scheduled_start_ms = now_ms + delay
 
-        pos_ms = payload.get("position_ms", room.get("playback_position_ms", 0))
+        pos_ms = 0 if action_upper == "CHANGE_TRACK" else payload.get("position_ms", room.get("playback_position_ms", 0))
         rate = float(payload.get("playback_rate", 1.0))
 
         room["is_playing"] = True
@@ -580,8 +624,8 @@ def execute_room_command(
         room["scheduled_start_ms"] = scheduled_start_ms
         room["playback_updated_at"] = now_iso
 
-        if payload.get("track_id"):
-            room["current_track_id"] = payload["track_id"]
+        if track_id:
+            room["current_track_id"] = track_id
 
     elif action_upper == "PAUSE":
         pos_ms = payload.get("position_ms", room.get("playback_position_ms", 0))
@@ -607,19 +651,24 @@ def execute_room_command(
         if not track_id:
             raise HTTPException(status_code=400, detail="track_id required")
 
-        next_pos = max([item.get("position", 0) for item in queue_list], default=-1) + 1
-        item_id = str(uuid.uuid4())
-        queue_item = {
-            "id": item_id,
-            "room_id": room_id,
-            "track_id": track_id,
-            "added_by": user_id,
-            "position": next_pos,
-            "vote_count": 0,
-            "played_at": None,
-            "created_at": now_iso,
-        }
-        queue_list.append(queue_item)
+        # Deduplicate if already pending/unplayed in queue
+        already_in_queue = any(i.get("track_id") == track_id and i.get("played_at") is None for i in queue_list)
+        if already_in_queue:
+            is_duplicate = True
+        else:
+            next_pos = max([item.get("position", 0) for item in queue_list], default=-1) + 1
+            item_id = str(uuid.uuid4())
+            queue_item = {
+                "id": item_id,
+                "room_id": room_id,
+                "track_id": track_id,
+                "added_by": user_id,
+                "position": next_pos,
+                "vote_count": 0,
+                "played_at": None,
+                "created_at": now_iso,
+            }
+            queue_list.append(queue_item)
 
         # Dual-write legacy queue
         room["queue"] = [i["track_id"] for i in get_room_queue_items(room_id)]
@@ -694,9 +743,14 @@ def execute_room_command(
 
             # Dual-write legacy queue
             room["queue"] = [i["track_id"] for i in get_room_queue_items(room_id)]
+        else:
+            # Queue is empty: preserve current_track_id, pause playback safely
+            room["is_playing"] = False
+            room["scheduled_start_ms"] = None
+            room["playback_updated_at"] = now_iso
 
     record_audit_log(room_id, user_id, action_upper, new_rev, payload)
-    return {
+    ret = {
         "success": True,
         "action": action_upper,
         "revision": new_rev,
@@ -704,3 +758,6 @@ def execute_room_command(
         "scheduled_start_ms": room.get("scheduled_start_ms"),
         "room": room,
     }
+    if is_duplicate:
+        ret["is_duplicate"] = True
+    return ret

@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import Link from "next/link";
 import { Heart, Upload, Disc3, X, Filter } from "lucide-react";
 import { SearchBar } from "@/components/ui/search-bar";
@@ -12,16 +12,21 @@ import { useAuth } from "@/contexts/auth-context";
 import { usePlayer } from "@/contexts/player-context";
 import { useTelegram } from "@/contexts/telegram-context";
 
+// Process-local SWR memory cache for instant tab transitions
+let cachedTracks: Track[] = [];
+let cachedFavorites: Track[] = [];
+
 export default function LibraryPage() {
   const [query, setQuery] = useState("");
-  const [tracks, setTracks] = useState<Track[]>([]);
-  const [favorites, setFavorites] = useState<Track[]>([]);
+  const [tracks, setTracks] = useState<Track[]>(() => cachedTracks);
+  const [favorites, setFavorites] = useState<Track[]>(() => cachedFavorites);
   const [activeTab, setActiveTab] = useState<"all" | "favorites">("all");
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(() => cachedTracks.length === 0);
   const [activeFilter, setActiveFilter] = useState<{ type: "artist" | "album"; value: string } | null>(null);
 
   // Single context menu coordinator for the page
   const [contextMenuTrack, setContextMenuTrack] = useState<Track | null>(null);
+  const autoPlayedRef = useRef(false);
 
   const { isAuthenticated, isInitializing, isGuest } = useAuth();
   const { playTrack } = usePlayer();
@@ -29,9 +34,14 @@ export default function LibraryPage() {
 
   const loadTracks = useCallback(async (searchTerm = "") => {
     try {
-      setIsLoading(true);
+      if (!searchTerm && cachedTracks.length === 0) {
+        setIsLoading(true);
+      }
       const res = await api.tracks.list(searchTerm);
       setTracks(res.items);
+      if (!searchTerm) {
+        cachedTracks = res.items;
+      }
     } catch {
       // ignore
     } finally {
@@ -43,6 +53,7 @@ export default function LibraryPage() {
     try {
       const favs = await api.favorites.list();
       setFavorites(favs);
+      cachedFavorites = favs;
     } catch {
       // ignore
     }
@@ -51,6 +62,33 @@ export default function LibraryPage() {
   useEffect(() => {
     loadTracks();
   }, [loadTracks]);
+
+  // Deep Link Auto-Play Handler (?track=<id>)
+  useEffect(() => {
+    if (autoPlayedRef.current) return;
+    if (typeof window === "undefined") return;
+
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const deepLinkTrackId = params.get("track");
+      if (deepLinkTrackId) {
+        autoPlayedRef.current = true;
+        const found = tracks.find((t) => t.id === deepLinkTrackId);
+        if (found) {
+          playTrack(found, tracks);
+        } else {
+          api.tracks
+            .get(deepLinkTrackId)
+            .then((t) => {
+              if (t) {
+                playTrack(t, [t, ...tracks]);
+              }
+            })
+            .catch(() => {});
+        }
+      }
+    } catch {}
+  }, [tracks, playTrack]);
 
   useEffect(() => {
     if (isInitializing) return;

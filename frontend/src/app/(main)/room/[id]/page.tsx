@@ -20,6 +20,7 @@ import {
   ThumbsDown,
   Volume2,
   Radio,
+  Plus,
 } from "lucide-react";
 import { ChatMessage, Track, QueueItem } from "@/lib/types";
 import { api } from "@/lib/api";
@@ -28,6 +29,8 @@ import { useAuth } from "@/contexts/auth-context";
 import { usePlayer } from "@/contexts/player-context";
 import { useTelegram } from "@/contexts/telegram-context";
 import { useRoomSync } from "@/hooks/use-room-sync";
+import { getRoomInviteUrl } from "@/lib/config";
+import { RoomTrackPicker } from "@/components/room/room-track-picker";
 
 export default function RoomDetailPage() {
   const params = useParams();
@@ -54,11 +57,11 @@ export default function RoomDetailPage() {
   const [activeTab, setActiveTab] = useState<"chat" | "queue" | "members">("chat");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [isTrackPickerOpen, setIsTrackPickerOpen] = useState(false);
 
   const handleShare = async () => {
     haptic("light");
-    const botUsername = process.env.NEXT_PUBLIC_BOT_USERNAME || "AfterhoursAudioBot";
-    const inviteUrl = `https://t.me/${botUsername}?startapp=room_${roomId}`;
+    const inviteUrl = getRoomInviteUrl(roomId);
 
     if (typeof navigator !== "undefined" && navigator.share) {
       try {
@@ -82,6 +85,15 @@ export default function RoomDetailPage() {
     } catch {
       // ignore
     }
+  };
+
+  const handlePlayNow = async (track: Track) => {
+    await sendCommand("CHANGE_TRACK", { track_id: track.id, position_ms: 0 });
+  };
+
+  const handleAddToQueue = async (track: Track) => {
+    const idempotencyKey = `q_${roomId}_${track.id}_${Date.now()}`;
+    await sendCommand("QUEUE_ADD", { track_id: track.id, idempotency_key: idempotencyKey });
   };
 
   // Telegram BackButton support
@@ -293,23 +305,38 @@ export default function RoomDetailPage() {
           </div>
         </div>
 
-        {canControl && (
-          <div className="flex items-center space-x-2">
+        <div className="flex items-center space-x-2 shrink-0">
+          {(canControl || canManageQueue) && (
             <button
-              onClick={handlePlaybackToggle}
-              className="w-11 h-11 flex items-center justify-center rounded-full bg-primary hover:bg-primary-hover text-white shadow-lg shadow-primary/30 transition-all active:scale-95"
-            >
-              {room.is_playing ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
-            </button>
-            <button
-              onClick={handleNextTrack}
+              onClick={() => {
+                haptic("light");
+                setIsTrackPickerOpen(true);
+              }}
               className="w-9 h-9 flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 text-content-primary transition-all active:scale-95"
-              title="Next Track"
+              title="Add / Change Music"
             >
-              <SkipForward className="w-4 h-4" />
+              <Plus className="w-4 h-4" />
             </button>
-          </div>
-        )}
+          )}
+
+          {canControl && (
+            <>
+              <button
+                onClick={handlePlaybackToggle}
+                className="w-10 h-10 flex items-center justify-center rounded-full bg-primary hover:bg-primary-hover text-white shadow-lg shadow-primary/30 transition-all active:scale-95"
+              >
+                {room.is_playing ? <Pause className="w-5 h-5 fill-current" /> : <Play className="w-5 h-5 fill-current ml-0.5" />}
+              </button>
+              <button
+                onClick={handleNextTrack}
+                className="w-9 h-9 flex items-center justify-center rounded-full bg-white/5 hover:bg-white/10 text-content-primary transition-all active:scale-95"
+                title="Next Track"
+              >
+                <SkipForward className="w-4 h-4" />
+              </button>
+            </>
+          )}
+        </div>
       </div>
 
       {/* ─── TABS: CHAT, QUEUE, MEMBERS ───────────────────────────────────── */}
@@ -395,6 +422,19 @@ export default function RoomDetailPage() {
 
       {activeTab === "queue" && (
         <div className="flex flex-col space-y-2">
+          {(canControl || canManageQueue) && (
+            <button
+              onClick={() => {
+                haptic("light");
+                setIsTrackPickerOpen(true);
+              }}
+              className="w-full py-2.5 px-4 mb-1 rounded-xl bg-primary/10 hover:bg-primary/20 border border-primary/30 text-primary text-xs font-bold flex items-center justify-center space-x-2 transition-all active:scale-[0.99]"
+            >
+              <Plus className="w-4 h-4" />
+              <span>Browse Library & Add Music</span>
+            </button>
+          )}
+
           {normalizedQueue.length > 0 ? (
             normalizedQueue.map((item, idx) => {
               const track = item.tracks;
@@ -439,7 +479,7 @@ export default function RoomDetailPage() {
                       <button
                         onClick={() => {
                           haptic("light");
-                          sendCommand("PLAY", { track_id: track.id, position_ms: 0 });
+                          sendCommand("CHANGE_TRACK", { track_id: track.id, position_ms: 0 });
                         }}
                         className="w-7 h-7 flex items-center justify-center rounded-full bg-white/5 hover:bg-primary text-content-primary hover:text-white transition-colors"
                         title="Play now"
@@ -470,7 +510,7 @@ export default function RoomDetailPage() {
                   <button
                     onClick={() => {
                       haptic("light");
-                      sendCommand("PLAY", { track_id: t.id, position_ms: 0 });
+                      sendCommand("CHANGE_TRACK", { track_id: t.id, position_ms: 0 });
                     }}
                     className="w-8 h-8 flex items-center justify-center rounded-full bg-white/5 hover:bg-primary text-content-primary hover:text-white transition-colors"
                   >
@@ -480,7 +520,20 @@ export default function RoomDetailPage() {
               </div>
             ))
           ) : (
-            <div className="py-12 text-center text-xs text-content-muted">Queue is empty.</div>
+            <div className="py-12 text-center flex flex-col items-center justify-center space-y-2">
+              <span className="text-xs text-content-muted">The queue is currently empty.</span>
+              {(canControl || canManageQueue) && (
+                <button
+                  onClick={() => {
+                    haptic("light");
+                    setIsTrackPickerOpen(true);
+                  }}
+                  className="px-4 py-2 text-xs font-semibold rounded-xl bg-white/5 hover:bg-white/10 text-content-primary border border-border"
+                >
+                  Pick a song to play
+                </button>
+              )}
+            </div>
           )}
         </div>
       )}
@@ -556,6 +609,15 @@ export default function RoomDetailPage() {
           ))}
         </div>
       )}
+
+      {/* ─── IN-ROOM TRACK PICKER ───────────────────────────────────────── */}
+      <RoomTrackPicker
+        isOpen={isTrackPickerOpen}
+        onClose={() => setIsTrackPickerOpen(false)}
+        onPlayNow={handlePlayNow}
+        onAddToQueue={handleAddToQueue}
+        currentTrackId={room.current_track_id}
+      />
     </div>
   );
 }
